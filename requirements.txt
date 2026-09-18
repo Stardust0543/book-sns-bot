@@ -1,2 +1,5 @@
 python-telegram-bot
 google-genai
+gspread
+pillow
+requests
