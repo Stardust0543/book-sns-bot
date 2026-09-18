@@ -1,5 +1,9 @@
 import os
+import json
 import logging
+import requests
+from io import BytesIO
+from PIL import Image, ImageDraw, ImageFont
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -10,14 +14,15 @@ from telegram.ext import (
     ContextTypes,
     ConversationHandler,
 )
+import gspread
 from google import genai
 
-# ==========================================
-# [수정 영역] 발급받은 토큰과 키를 입력하세요!
-# ==========================================
+# ----------------------------------------------------
+# 1. 환경 변수 설정
+# ----------------------------------------------------
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-# ==========================================
+GOOGLE_SERVICE_ACCOUNT_JSON = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
 
 client = genai.Client(api_key=GEMINI_API_KEY)
 logging.basicConfig(level=logging.INFO)
@@ -25,14 +30,79 @@ logging.basicConfig(level=logging.INFO)
 WAITING_FOR_FEEDBACK = 1
 user_drafts = {}
 
-def generate_draft(book_title, event_info, feedback=None):
+# ----------------------------------------------------
+# 2. 구글 시트 연동 함수
+# ----------------------------------------------------
+def get_pending_event_from_sheet():
+    """구글 시트에서 Status가 Pending인 첫 번째 이벤트를 읽어옵니다."""
+    try:
+        creds_dict = json.loads(GOOGLE_SERVICE_ACCOUNT_JSON)
+        gc = gspread.service_account_from_dict(creds_dict)
+        spreadsheet = gc.open("도서_이벤트_마스터")
+        worksheet = spreadsheet.worksheet("Events")
+        
+        records = worksheet.get_all_records()
+        for idx, row in enumerate(records, start=2):
+            if str(row.get("Status", "")).strip() == "Pending":
+                return {
+                    "row_index": idx,
+                    "book_title": row.get("BookTitle", "도서명 미정"),
+                    "author": row.get("Author", "저자 미정"),
+                    "event_info": row.get("EventSummary", "이벤트 내용 없음"),
+                    "cover_url": row.get("CoverUrl", ""),
+                    "worksheet": worksheet
+                }
+    except Exception as e:
+        logging.error(f"구글 시트 연동 오류: {e}")
+    return None
+
+# ----------------------------------------------------
+# 3. Pillow 카드뉴스 이미지 합성 함수
+# ----------------------------------------------------
+def create_card_news(book_title, event_info, cover_url=None, output_path="cardnews.png"):
+    canvas_w, canvas_h = 1080, 1080
+    canvas = Image.new("RGBA", (canvas_w, canvas_h), (250, 252, 255))
+    draw = ImageDraw.Draw(canvas)
+
+    # 표지 다운로드 및 배치
+    cover_y = 120
+    h_size = 400
+    if cover_url and cover_url.startswith("http"):
+        try:
+            res = requests.get(cover_url, timeout=5)
+            cover_img = Image.open(BytesIO(res.content)).convert("RGBA")
+            cover_img.thumbnail((380, 500))
+            w_size, h_size = cover_img.size
+            cover_x = (canvas_w - w_size) // 2
+            
+            # 그림자 효과
+            draw.rounded_rectangle([cover_x+10, cover_y+10, cover_x+w_size+10, cover_y+h_size+10], radius=12, fill=(220, 225, 230))
+            canvas.paste(cover_img, (cover_x, cover_y))
+        except Exception as e:
+            logging.error(f"표지 이미지 로드 실패: {e}")
+
+    # 텍스트 배치
+    font = ImageFont.load_default()
+    text_start_y = cover_y + h_size + 60
+    draw.text((canvas_w / 2, text_start_y), f"《{book_title}》", font=font, fill=(30, 30, 30), anchor="mm")
+    draw.text((canvas_w / 2, text_start_y + 80), event_info, font=font, fill=(70, 70, 70), anchor="mm")
+
+    final_img = canvas.convert("RGB")
+    final_img.save(output_path, "PNG")
+    return output_path
+
+# ----------------------------------------------------
+# 4. Gemini 문구 생성
+# ----------------------------------------------------
+def generate_draft(book_title, author, event_info, feedback=None):
     prompt = f"""
-    너는 도서 전문 마케터야. 아래 정보를 바탕으로 인스타그램 홍보 문구를 작성해줘.
+    너는 도서 마케팅 전문가야. 아래 정보로 인스타그램 홍보 포스팅 문구를 작성해줘.
     - 도서명: {book_title}
+    - 저자: {author}
     - 이벤트 내용: {event_info}
     """
     if feedback:
-        prompt += f"\n\n[사용자 추가 수정 요청사항]: {feedback}\n위 수정 요청사항을 적극 반영해서 다시 작성해줘."
+        prompt += f"\n\n[사용자 수정 요청사항]: {feedback}\n위 요구사항을 적극 반영해서 재생성해줘."
 
     response = client.models.generate_content(
         model="gemini-3.5-flash-lite",
@@ -40,20 +110,25 @@ def generate_draft(book_title, event_info, feedback=None):
     )
     return response.text
 
+# ----------------------------------------------------
+# 5. 텔레그램 대화 핸들러
+# ----------------------------------------------------
 async def start_draft(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     
-    user_drafts[chat_id] = {
-        "book_title": "우리가 지켜야 할 한국사",
-        "event_info": "출간 기념 서평 이벤트 및 할인 행사",
-        "current_text": ""
-    }
+    # 구글 시트에서 Pending 데이터 조회
+    event_data = get_pending_event_from_sheet()
+    if not event_data:
+        await context.bot.send_message(chat_id=chat_id, text="📌 현재 처리할 [Pending] 상태의 도서 이벤트가 없습니다.")
+        return ConversationHandler.END
+
+    user_drafts[chat_id] = event_data
     
-    draft_text = generate_draft(
-        user_drafts[chat_id]["book_title"], 
-        user_drafts[chat_id]["event_info"]
-    )
+    # AI 문구 생성 및 카드뉴스 제작
+    draft_text = generate_draft(event_data["book_title"], event_data["author"], event_data["event_info"])
     user_drafts[chat_id]["current_text"] = draft_text
+    
+    img_path = create_card_news(event_data["book_title"], event_data["event_info"], event_data["cover_url"])
 
     keyboard = [
         [
@@ -63,27 +138,37 @@ async def start_draft(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    await context.bot.send_message(
-        chat_id=chat_id,
-        text=f"📌 **[도서 포스팅 초안 검토 요청]**\n\n{draft_text}",
-        parse_mode="Markdown",
-        reply_markup=reply_markup
-    )
+    # 이미지와 문구를 함께 전송
+    with open(img_path, "rb") as photo:
+        await context.bot.send_photo(
+            chat_id=chat_id,
+            photo=photo,
+            caption=f"📌 **[도서 포스팅 초안 검토 요청]**\n\n{draft_text}",
+            parse_mode="Markdown",
+            reply_markup=reply_markup
+        )
     return ConversationHandler.END
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    chat_id = query.message.chat_id
 
     if query.data == "approve":
-        await query.edit_message_text(
-            text=f"{query.message.text}\n\n✅ **[승인 완료]** 포스팅이 최종 승인되었습니다!"
+        # 승인 시 구글 시트 Status를 Done으로 변경
+        if chat_id in user_drafts and "worksheet" in user_drafts[chat_id]:
+            row_idx = user_drafts[chat_id]["row_index"]
+            ws = user_drafts[chat_id]["worksheet"]
+            ws.update_cell(row_idx, 5, "Done")
+
+        await query.edit_message_caption(
+            caption=f"{query.message.caption}\n\n✅ **[승인 완료]** 포스팅이 승인되었으며 시트 상태가 'Done'으로 변경되었습니다!"
         )
         return ConversationHandler.END
 
     elif query.data == "request_edit":
-        await query.edit_message_text(
-            text=f"{query.message.text}\n\n✏️ **[수정 요청]** 수정하고자 하는 내용을 메시지로 입력해 주세요."
+        await query.edit_message_caption(
+            caption=f"{query.message.caption}\n\n✏️ **[수정 요청]** 수정 사항을 메시지로 입력해 주세요."
         )
         return WAITING_FOR_FEEDBACK
 
@@ -91,14 +176,13 @@ async def receive_feedback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     feedback_text = update.message.text
 
-    await update.message.reply_text("🔄 피드백을 반영하여 초안을 다시 작성하고 있습니다...")
+    await update.message.reply_text("🔄 피드백을 반영하여 초안과 이미지를 재생성 중입니다...")
 
-    new_draft = generate_draft(
-        user_drafts[chat_id]["book_title"],
-        user_drafts[chat_id]["event_info"],
-        feedback=feedback_text
-    )
+    data = user_drafts[chat_id]
+    new_draft = generate_draft(data["book_title"], data["author"], data["event_info"], feedback=feedback_text)
     user_drafts[chat_id]["current_text"] = new_draft
+    
+    img_path = create_card_news(data["book_title"], data["event_info"], data["cover_url"])
 
     keyboard = [
         [
@@ -108,16 +192,18 @@ async def receive_feedback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    await update.message.reply_text(
-        text=f"📌 **[수정된 포스팅 초안]**\n\n{new_draft}",
-        parse_mode="Markdown",
-        reply_markup=reply_markup
-    )
+    with open(img_path, "rb") as photo:
+        await context.bot.send_photo(
+            chat_id=chat_id,
+            photo=photo,
+            caption=f"📌 **[수정된 포스팅 초안]**\n\n{new_draft}",
+            parse_mode="Markdown",
+            reply_markup=reply_markup
+        )
     return ConversationHandler.END
 
 def main():
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-
     conv_handler = ConversationHandler(
         entry_points=[
             CommandHandler("start", start_draft),
@@ -131,9 +217,7 @@ def main():
         fallbacks=[],
         per_message=False
     )
-
     application.add_handler(conv_handler)
-    print("텔레그램 에이전트 봇이 성공적으로 실행되었습니다! 텔레그램에서 /start 를 입력해보세요.")
     application.run_polling()
 
 if __name__ == "__main__":
