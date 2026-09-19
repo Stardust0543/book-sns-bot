@@ -123,11 +123,11 @@ def get_pending_event_from_sheet():
     return None
 
 # ----------------------------------------------------
-# 4. Gemini AI 시나리오 및 포스팅 생성
+# 4. Gemini AI 풍성한 카드뉴스 시나리오 생성
 # ----------------------------------------------------
 def generate_scenario_and_draft(book_title, author, event_info, feedback=None):
     prompt = f"""
-    너는 도서 전문 마케터야. 아래 도서 정보와 요청사항을 바탕으로 인스타그램 카드뉴스 3장 시나리오 및 포스팅 문구를 작성해줘.
+    너는 도서 전문 출판 마케터야. 아래 도서 정보와 홍보 키워드를 바탕으로 인스타그램 카드뉴스 3장에 들어갈 풍성하고 깊이 있는 내용의 시나리오 및 본문 포스팅을 작성해줘.
 
     [도서 정보]
     - 도서명: {book_title}
@@ -138,14 +138,19 @@ def generate_scenario_and_draft(book_title, author, event_info, feedback=None):
         prompt += f"\n- [사용자 수정 요청사항]: {feedback}"
 
     prompt += """
-    반드시 아래 JSON 포맷으로만 응답해줘. 다른 설명이나 마크다운 없이 순수 JSON만 반환해.
+    반드시 아래 JSON 포맷으로만 응답해줘. 다른 설명이나 마크다운 표현 없이 순수 JSON 텍스트만 반환해.
 
     {
-      "card1_sub": "슬라이드1 카테고리/캐치프레이즈 (예: 한글날 기념 특별 추천)",
-      "card2_title": "슬라이드2 핵심 질문/주제 (15자 이내)",
-      "card2_body": "슬라이드2 핵심 스토리/내용 요약 (60자 이내, 줄바꿈 포함 가능)",
-      "card3_title": "슬라이드3 추천 대상/메시지 (20자 이내)",
-      "caption": "인스타그램 본문 텍스트 (독자의 흥미를 끄는 문구, 해시태그 포함 600자 이내)"
+      "card1_sub": "슬라이드1 카테고리/캐치프레이즈 (예: 한글날 기념 특별 기획)",
+      "card2_title": "슬라이드2 메인 주제 제목 (예: 우리가 몰랐던 한글의 역사)",
+      "card2_p1": "슬라이드2 핵심 포인트 1 (30자 이내)",
+      "card2_p2": "슬라이드2 핵심 포인트 2 (30자 이내)",
+      "card2_p3": "슬라이드2 핵심 포인트 3 (30자 이내)",
+      "card3_title": "슬라이드3 추천 대상 / 도서의 가치 (예: 이런 분들께 이 책을 추천합니다)",
+      "card3_r1": "추천 대상 1 (25자 이내)",
+      "card3_r2": "추천 대상 2 (25자 이내)",
+      "card3_r3": "추천 대상 3 (25자 이내)",
+      "caption": "인스타그램 본문 텍스트 (줄바꿈 및 해시태그 포함, 흥미진진한 도서 소개글 600자 이내)"
     }
     """
 
@@ -164,15 +169,20 @@ def generate_scenario_and_draft(book_title, author, event_info, feedback=None):
     except Exception:
         data = {
             "card1_sub": "특집 추천 도서",
-            "card2_title": f"《{book_title}》을 읽어야 하는 이유",
-            "card2_body": f"{author} 저자가 전하는 살아있는 역사 이야기.\n지금 이 순간, 우리가 꼭 기억해야 할 역사적 순간들!",
-            "card3_title": "역사에 관심 있는 모든 독자분들께 추천합니다",
+            "card2_title": f"《{book_title}》 핵심 이야기",
+            "card2_p1": "• 역사 속 숨겨진 감동적인 순간들",
+            "card2_p2": "• 저자가 직접 전하는 생생한 현장 기록",
+            "card2_p3": "• 오늘날 우리가 꼭 기억해야 할 역사적 가치",
+            "card3_title": "이런 분들께 추천합니다",
+            "card3_r1": "✔ 깊이 있는 역사를 쉽게 읽고 싶은 독자",
+            "card3_r2": "✔ 올바른 역사 의식을 키우고 싶은 청소년",
+            "card3_r3": "✔ 가슴 따뜻한 이야기를 찾는 모든 분들",
             "caption": f"📖 《{book_title}》\n저자: {author}\n\n{event_info}\n\n#도서추천 #한국사 #책스타그램 #허들링북스"
         }
     return data
 
 # ----------------------------------------------------
-# 5. 시나리오 기반 카드뉴스 3장 자동 합성
+# 5. 시나리오 기반 풍성한 카드뉴스 3장 자동 합성
 # ----------------------------------------------------
 def create_card_news_pack(book_title, author, scenario_data, cover_url=None, aspect_ratio="4:5"):
     image_paths = []
@@ -184,9 +194,9 @@ def create_card_news_pack(book_title, author, scenario_data, cover_url=None, asp
     else:
         canvas_w, canvas_h = 1080, 1350
 
-    font_title = get_font(int(canvas_h * 0.040))
-    font_sub = get_font(int(canvas_h * 0.026))
-    font_body = get_font(int(canvas_h * 0.023))
+    font_title = get_font(int(canvas_h * 0.038))
+    font_sub = get_font(int(canvas_h * 0.025))
+    font_body = get_font(int(canvas_h * 0.022))
 
     cover_img = None
     if cover_url and cover_url.startswith("http"):
@@ -207,7 +217,6 @@ def create_card_news_pack(book_title, author, scenario_data, cover_url=None, asp
     margin = int(canvas_w * 0.06)
     d1.rectangle([margin, margin, canvas_w-margin, canvas_h-margin], outline=(255, 255, 255, 100), width=2)
 
-    # 상단 서브 카테고리
     d1.text((canvas_w / 2, int(canvas_h * 0.12)), scenario_data.get("card1_sub", "FEATURED BOOK"), font=font_sub, fill=(56, 189, 248), anchor="mm")
 
     if cover_img:
@@ -231,7 +240,7 @@ def create_card_news_pack(book_title, author, scenario_data, cover_url=None, asp
     c1.convert("RGB").save(p1_path, "PNG")
     image_paths.append(p1_path)
 
-    # ===== 2장: 핵심 스토리/내용 카드뉴스 (어두운 가독성 카드 적용) =====
+    # ===== 2장: 풍성한 스토리 3포인트 카드뉴스 =====
     c2 = bg_img.copy()
     overlay2 = Image.new("RGBA", (canvas_w, canvas_h), (15, 23, 42, 220))
     c2 = Image.alpha_composite(c2, overlay2)
@@ -240,49 +249,69 @@ def create_card_news_pack(book_title, author, scenario_data, cover_url=None, asp
     d2.text((canvas_w / 2, int(canvas_h * 0.10)), "INSIGHT STORY", font=font_sub, fill=(56, 189, 248), anchor="mm")
     d2.text((canvas_w / 2, int(canvas_h * 0.16)), scenario_data.get("card2_title", "핵심 스토리"), font=font_title, fill=(255, 255, 255), anchor="mm")
 
-    # 가독성을 확보한 어두운 카드 박스 (배경 대비 100% 명확)
     box_margin = int(canvas_w * 0.08)
     d2.rounded_rectangle([box_margin, int(canvas_h * 0.24), canvas_w-box_margin, int(canvas_h * 0.88)], radius=24, fill=(30, 41, 59, 230), outline=(71, 85, 105), width=2)
     
-    # 본문 자동 줄바꿈 및 렌더링
-    raw_body = scenario_data.get("card2_body", "")
-    lines = []
-    for paragraph in raw_body.split("\n"):
-        lines.extend(textwrap.wrap(paragraph, width=22))
+    # 3가지 핵심 포인트를 선명하게 렌더링
+    points = [
+        scenario_data.get("card2_p1", ""),
+        scenario_data.get("card2_p2", ""),
+        scenario_data.get("card2_p3", "")
+    ]
     
-    start_y = int(canvas_h * 0.38)
-    line_height = int(canvas_h * 0.045)
-    for i, line in enumerate(lines[:10]):
-        d2.text((canvas_w / 2, start_y + (i * line_height)), line, font=font_body, fill=(241, 245, 249), anchor="mm")
+    start_y = int(canvas_h * 0.32)
+    gap_y = int(canvas_h * 0.18)
+    
+    for idx, p in enumerate(points):
+        if not p: continue
+        curr_y = start_y + (idx * gap_y)
+        # 소항목 구분용 넘버링 아이콘 박스
+        d2.rounded_rectangle([box_margin + 30, curr_y, canvas_w - box_margin - 30, curr_y + int(canvas_h * 0.12)], radius=12, fill=(51, 65, 85))
+        
+        p_lines = textwrap.wrap(p, width=22)
+        for line_idx, l in enumerate(p_lines[:2]):
+            d2.text((canvas_w / 2, curr_y + int(canvas_h * 0.04) + (line_idx * 35)), l, font=font_body, fill=(241, 245, 249), anchor="mm")
 
     p2_path = "card2.png"
     c2.convert("RGB").save(p2_path, "PNG")
     image_paths.append(p2_path)
 
-    # ===== 3장: 추천 대상 & CTA 카드뉴스 =====
+    # ===== 3장: 추천 대상 카드뉴스 (버튼 제거 및 깔끔한 레이아웃) =====
     c3 = Image.new("RGBA", (canvas_w, canvas_h), (248, 250, 252))
     d3 = ImageDraw.Draw(c3)
 
-    header_h = int(canvas_h * 0.36)
+    header_h = int(canvas_h * 0.32)
     header_bg = bg_img.crop((0, 0, canvas_w, header_h))
-    overlay3 = Image.new("RGBA", (canvas_w, header_h), (0, 0, 0, 130))
+    overlay3 = Image.new("RGBA", (canvas_w, header_h), (0, 0, 0, 140))
     header_bg = Image.alpha_composite(header_bg, overlay3)
     c3.paste(header_bg, (0, 0))
 
-    d3.text((canvas_w / 2, int(header_h * 0.40)), "RECOMMENDATION", font=font_sub, fill=(56, 189, 248), anchor="mm")
+    d3.text((canvas_w / 2, int(header_h * 0.35)), "RECOMMENDATION", font=font_sub, fill=(56, 189, 248), anchor="mm")
     d3.text((canvas_w / 2, int(header_h * 0.70)), f"《{book_title}》", font=font_title, fill=(255, 255, 255), anchor="mm")
 
-    # 하단 추천 카드
-    d3.rounded_rectangle([box_margin, header_h + int(canvas_h * 0.05), canvas_w-box_margin, canvas_h - int(canvas_h * 0.06)], radius=28, fill=(255, 255, 255), outline=(226, 232, 240), width=2)
+    # 하단 추천 카드 박스
+    d3.rounded_rectangle([box_margin, header_h + int(canvas_h * 0.04), canvas_w-box_margin, canvas_h - int(canvas_h * 0.06)], radius=28, fill=(255, 255, 255), outline=(226, 232, 240), width=2)
     
-    rec_title = scenario_data.get("card3_title", "지금 온·오프라인 서점에서 만나보세요!")
-    rec_lines = textwrap.wrap(rec_title, width=18)
-    for idx, l in enumerate(rec_lines[:2]):
-        d3.text((canvas_w / 2, header_h + int(canvas_h * 0.16) + (idx * 50)), l, font=font_sub, fill=(30, 41, 59), anchor="mm")
+    rec_title = scenario_data.get("card3_title", "이런 분들께 이 책을 추천합니다")
+    d3.text((canvas_w / 2, header_h + int(canvas_h * 0.12)), rec_title, font=font_sub, fill=(30, 41, 59), anchor="mm")
 
-    btn_y = canvas_h - int(canvas_h * 0.18)
-    d3.rounded_rectangle([int(canvas_w * 0.16), btn_y, canvas_w - int(canvas_w * 0.16), btn_y + int(canvas_h * 0.07)], radius=50, fill=(14, 165, 233))
-    d3.text((canvas_w / 2, btn_y + int(canvas_h * 0.035)), "자세히 보기 & 구매하기 ➔", font=font_sub, fill=(255, 255, 255), anchor="mm")
+    recommends = [
+        scenario_data.get("card3_r1", ""),
+        scenario_data.get("card3_r2", ""),
+        scenario_data.get("card3_r3", "")
+    ]
+
+    rec_start_y = header_h + int(canvas_h * 0.22)
+    rec_gap = int(canvas_h * 0.12)
+    
+    for idx, r in enumerate(recommends):
+        if not r: continue
+        curr_y = rec_start_y + (idx * rec_gap)
+        d3.rounded_rectangle([box_margin + 30, curr_y, canvas_w - box_margin - 30, curr_y + int(canvas_h * 0.09)], radius=12, fill=(241, 245, 249))
+        
+        r_lines = textwrap.wrap(r, width=22)
+        for line_idx, l in enumerate(r_lines[:2]):
+            d3.text((canvas_w / 2, curr_y + int(canvas_h * 0.045) + (line_idx * 30)), l, font=font_body, fill=(51, 65, 85), anchor="mm")
 
     p3_path = "card3.png"
     c3.convert("RGB").save(p3_path, "PNG")
@@ -358,7 +387,7 @@ async def receive_feedback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     feedback_text = update.message.text
 
-    await update.message.reply_text("🔄 피드백을 반영하여 카드뉴스 시나리오와 3장 이미지를 재생성 중입니다...")
+    await update.message.reply_text("🔄 피드백을 반영하여 카드뉴스 시나리오와 3장 이미지를 풍성하게 재생성 중입니다...")
 
     data = user_drafts[chat_id]
     new_scenario = generate_scenario_and_draft(data["book_title"], data["author"], data["event_info"], feedback=feedback_text)
