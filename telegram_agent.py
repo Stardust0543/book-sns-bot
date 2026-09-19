@@ -4,6 +4,7 @@ import logging
 import threading
 import warnings
 import requests
+import textwrap
 from io import BytesIO
 from PIL import Image, ImageDraw, ImageFont
 from flask import Flask
@@ -87,7 +88,7 @@ def get_free_stock_image(keyword="reading", width=1080, height=1350):
     return Image.open(BytesIO(res.content)).convert("RGBA")
 
 # ----------------------------------------------------
-# 3. 구글 시트 연동 (Aspect 비율 필드 지원)
+# 3. 구글 시트 연동
 # ----------------------------------------------------
 def get_pending_event_from_sheet():
     try:
@@ -122,24 +123,71 @@ def get_pending_event_from_sheet():
     return None
 
 # ----------------------------------------------------
-# 4. 인스타그램 비율별 템플릿 카드뉴스 합성
+# 4. Gemini AI 시나리오 및 포스팅 생성
 # ----------------------------------------------------
-def create_card_news_pack(book_title, author, event_info, cover_url=None, aspect_ratio="4:5"):
+def generate_scenario_and_draft(book_title, author, event_info, feedback=None):
+    prompt = f"""
+    너는 도서 전문 마케터야. 아래 도서 정보와 요청사항을 바탕으로 인스타그램 카드뉴스 3장 시나리오 및 포스팅 문구를 작성해줘.
+
+    [도서 정보]
+    - 도서명: {book_title}
+    - 저자: {author}
+    - 홍보 주제/요청: {event_info}
+    """
+    if feedback:
+        prompt += f"\n- [사용자 수정 요청사항]: {feedback}"
+
+    prompt += """
+    반드시 아래 JSON 포맷으로만 응답해줘. 다른 설명이나 마크다운 없이 순수 JSON만 반환해.
+
+    {
+      "card1_sub": "슬라이드1 카테고리/캐치프레이즈 (예: 한글날 기념 특별 추천)",
+      "card2_title": "슬라이드2 핵심 질문/주제 (15자 이내)",
+      "card2_body": "슬라이드2 핵심 스토리/내용 요약 (60자 이내, 줄바꿈 포함 가능)",
+      "card3_title": "슬라이드3 추천 대상/메시지 (20자 이내)",
+      "caption": "인스타그램 본문 텍스트 (독자의 흥미를 끄는 문구, 해시태그 포함 600자 이내)"
+    }
+    """
+
+    chat = client.chats.create(model="gemini-3.5-flash-lite")
+    response = chat.send_message(prompt)
+    
+    text = response.text.strip()
+    if text.startswith("```json"):
+        text = text[7:]
+    if text.endswith("```"):
+        text = text[:-3]
+    text = text.strip()
+
+    try:
+        data = json.loads(text)
+    except Exception:
+        data = {
+            "card1_sub": "특집 추천 도서",
+            "card2_title": f"《{book_title}》을 읽어야 하는 이유",
+            "card2_body": f"{author} 저자가 전하는 살아있는 역사 이야기.\n지금 이 순간, 우리가 꼭 기억해야 할 역사적 순간들!",
+            "card3_title": "역사에 관심 있는 모든 독자분들께 추천합니다",
+            "caption": f"📖 《{book_title}》\n저자: {author}\n\n{event_info}\n\n#도서추천 #한국사 #책스타그램 #허들링북스"
+        }
+    return data
+
+# ----------------------------------------------------
+# 5. 시나리오 기반 카드뉴스 3장 자동 합성
+# ----------------------------------------------------
+def create_card_news_pack(book_title, author, scenario_data, cover_url=None, aspect_ratio="4:5"):
     image_paths = []
     
-    # 비율에 따른 캔버스 해상도 설정
     if aspect_ratio == "1:1":
         canvas_w, canvas_h = 1080, 1080
     elif aspect_ratio == "1.91:1":
         canvas_w, canvas_h = 1080, 566
-    else: # 기본값 4:5 (세로형 인스타그램 최적화)
+    else:
         canvas_w, canvas_h = 1080, 1350
 
-    font_title = get_font(int(canvas_h * 0.042))
-    font_sub = get_font(int(canvas_h * 0.028))
-    font_body = get_font(int(canvas_h * 0.024))
+    font_title = get_font(int(canvas_h * 0.040))
+    font_sub = get_font(int(canvas_h * 0.026))
+    font_body = get_font(int(canvas_h * 0.023))
 
-    # 표지 이미지 다운로드
     cover_img = None
     if cover_url and cover_url.startswith("http"):
         try:
@@ -148,79 +196,92 @@ def create_card_news_pack(book_title, author, event_info, cover_url=None, aspect
         except Exception as e:
             logging.error(f"표지 다운로드 실패: {e}")
 
-    bg_img = get_free_stock_image("book,library,reading", canvas_w, canvas_h)
+    bg_img = get_free_stock_image("book,library,history", canvas_w, canvas_h)
 
-    # ===== 1장: 표지 템플릿 (텍스트 없이 깔끔한 도서 커버 강조) =====
+    # ===== 1장: 메인 표지 카드뉴스 =====
     c1 = bg_img.copy()
-    overlay1 = Image.new("RGBA", (canvas_w, canvas_h), (15, 23, 42, 160)) # 딥 톤 오버레이
+    overlay1 = Image.new("RGBA", (canvas_w, canvas_h), (15, 23, 42, 170))
     c1 = Image.alpha_composite(c1, overlay1)
     d1 = ImageDraw.Draw(c1)
 
-    # 상/하단 디자인 템플릿 프레임 라인
     margin = int(canvas_w * 0.06)
-    d1.rectangle([margin, margin, canvas_w-margin, canvas_h-margin], outline=(255, 255, 255, 120), width=3)
+    d1.rectangle([margin, margin, canvas_w-margin, canvas_h-margin], outline=(255, 255, 255, 100), width=2)
+
+    # 상단 서브 카테고리
+    d1.text((canvas_w / 2, int(canvas_h * 0.12)), scenario_data.get("card1_sub", "FEATURED BOOK"), font=font_sub, fill=(56, 189, 248), anchor="mm")
 
     if cover_img:
         img_temp = cover_img.copy()
-        max_h = int(canvas_h * 0.55)
+        max_h = int(canvas_h * 0.50)
         img_temp.thumbnail((int(canvas_w * 0.55), max_h))
         w_size, h_size = img_temp.size
         cover_x = (canvas_w - w_size) // 2
-        cover_y = (canvas_h - h_size) // 2 - int(canvas_h * 0.04)
+        cover_y = int(canvas_h * 0.18)
         
-        # 카드 프레임 박스
-        d1.rounded_rectangle([cover_x-15, cover_y-15, cover_x+w_size+15, cover_y+h_size+15], radius=16, fill=(255, 255, 255, 40))
+        d1.rounded_rectangle([cover_x-12, cover_y-12, cover_x+w_size+12, cover_y+h_size+12], radius=16, fill=(255, 255, 255, 40))
         c1.paste(img_temp, (cover_x, cover_y), img_temp)
-        text_y = cover_y + h_size + int(canvas_h * 0.05)
+        text_y = cover_y + h_size + int(canvas_h * 0.06)
     else:
         text_y = canvas_h // 2
 
     d1.text((canvas_w / 2, text_y), f"《{book_title}》", font=font_title, fill=(255, 255, 255), anchor="mm")
-    d1.text((canvas_w / 2, text_y + int(canvas_h * 0.05)), f"{author} 지음", font=font_sub, fill=(226, 232, 240), anchor="mm")
+    d1.text((canvas_w / 2, text_y + int(canvas_h * 0.05)), f"{author} 지음", font=font_sub, fill=(203, 213, 225), anchor="mm")
     
     p1_path = "card1.png"
     c1.convert("RGB").save(p1_path, "PNG")
     image_paths.append(p1_path)
 
-    # ===== 2장: 콘텐츠 템플릿 (본문 유광 템플릿 카드) =====
+    # ===== 2장: 핵심 스토리/내용 카드뉴스 (어두운 가독성 카드 적용) =====
     c2 = bg_img.copy()
-    overlay2 = Image.new("RGBA", (canvas_w, canvas_h), (15, 23, 42, 210))
+    overlay2 = Image.new("RGBA", (canvas_w, canvas_h), (15, 23, 42, 220))
     c2 = Image.alpha_composite(c2, overlay2)
     d2 = ImageDraw.Draw(c2)
 
-    d2.text((canvas_w / 2, int(canvas_h * 0.12)), "BOOK HIGHLIGHT", font=font_sub, fill=(56, 189, 248), anchor="mm")
-    d2.text((canvas_w / 2, int(canvas_h * 0.18)), f"《{book_title}》", font=font_title, fill=(255, 255, 255), anchor="mm")
+    d2.text((canvas_w / 2, int(canvas_h * 0.10)), "INSIGHT STORY", font=font_sub, fill=(56, 189, 248), anchor="mm")
+    d2.text((canvas_w / 2, int(canvas_h * 0.16)), scenario_data.get("card2_title", "핵심 스토리"), font=font_title, fill=(255, 255, 255), anchor="mm")
 
-    # 가독성 확보용 템플릿 박스
+    # 가독성을 확보한 어두운 카드 박스 (배경 대비 100% 명확)
     box_margin = int(canvas_w * 0.08)
-    d2.rounded_rectangle([box_margin, int(canvas_h * 0.26), canvas_w-box_margin, int(canvas_h * 0.85)], radius=24, fill=(255, 255, 255, 30), outline=(255, 255, 255, 70), width=2)
-    d2.text((canvas_w / 2, int(canvas_h * 0.35)), "📌 도서 핵심 포인트", font=font_sub, fill=(255, 255, 255), anchor="mm")
-    d2.text((canvas_w / 2, int(canvas_h * 0.55)), event_info, font=font_body, fill=(226, 232, 240), anchor="mm")
+    d2.rounded_rectangle([box_margin, int(canvas_h * 0.24), canvas_w-box_margin, int(canvas_h * 0.88)], radius=24, fill=(30, 41, 59, 230), outline=(71, 85, 105), width=2)
+    
+    # 본문 자동 줄바꿈 및 렌더링
+    raw_body = scenario_data.get("card2_body", "")
+    lines = []
+    for paragraph in raw_body.split("\n"):
+        lines.extend(textwrap.wrap(paragraph, width=22))
+    
+    start_y = int(canvas_h * 0.38)
+    line_height = int(canvas_h * 0.045)
+    for i, line in enumerate(lines[:10]):
+        d2.text((canvas_w / 2, start_y + (i * line_height)), line, font=font_body, fill=(241, 245, 249), anchor="mm")
 
     p2_path = "card2.png"
     c2.convert("RGB").save(p2_path, "PNG")
     image_paths.append(p2_path)
 
-    # ===== 3장: CTA 템플릿 (하단 깔끔한 레이아웃 프레임) =====
+    # ===== 3장: 추천 대상 & CTA 카드뉴스 =====
     c3 = Image.new("RGBA", (canvas_w, canvas_h), (248, 250, 252))
     d3 = ImageDraw.Draw(c3)
 
-    header_h = int(canvas_h * 0.38)
+    header_h = int(canvas_h * 0.36)
     header_bg = bg_img.crop((0, 0, canvas_w, header_h))
-    overlay3 = Image.new("RGBA", (canvas_w, header_h), (0, 0, 0, 110))
+    overlay3 = Image.new("RGBA", (canvas_w, header_h), (0, 0, 0, 130))
     header_bg = Image.alpha_composite(header_bg, overlay3)
     c3.paste(header_bg, (0, 0))
 
-    d3.text((canvas_w / 2, int(header_h * 0.45)), f"《{book_title}》", font=font_title, fill=(255, 255, 255), anchor="mm")
-    d3.text((canvas_w / 2, int(header_h * 0.75)), event_info, font=font_sub, fill=(226, 232, 240), anchor="mm")
+    d3.text((canvas_w / 2, int(header_h * 0.40)), "RECOMMENDATION", font=font_sub, fill=(56, 189, 248), anchor="mm")
+    d3.text((canvas_w / 2, int(header_h * 0.70)), f"《{book_title}》", font=font_title, fill=(255, 255, 255), anchor="mm")
 
-    # 하단 레이아웃 박스
-    d3.rounded_rectangle([box_margin, header_h + int(canvas_h * 0.06), canvas_w-box_margin, canvas_h - int(canvas_h * 0.08)], radius=30, fill=(255, 255, 255), outline=(226, 232, 240), width=2)
-    d3.text((canvas_w / 2, header_h + int(canvas_h * 0.18)), "📖 지금 온·오프라인 서점에서 만나보세요!", font=font_sub, fill=(30, 41, 59), anchor="mm")
+    # 하단 추천 카드
+    d3.rounded_rectangle([box_margin, header_h + int(canvas_h * 0.05), canvas_w-box_margin, canvas_h - int(canvas_h * 0.06)], radius=28, fill=(255, 255, 255), outline=(226, 232, 240), width=2)
     
-    # CTA 버튼
+    rec_title = scenario_data.get("card3_title", "지금 온·오프라인 서점에서 만나보세요!")
+    rec_lines = textwrap.wrap(rec_title, width=18)
+    for idx, l in enumerate(rec_lines[:2]):
+        d3.text((canvas_w / 2, header_h + int(canvas_h * 0.16) + (idx * 50)), l, font=font_sub, fill=(30, 41, 59), anchor="mm")
+
     btn_y = canvas_h - int(canvas_h * 0.18)
-    d3.rounded_rectangle([int(canvas_w * 0.18), btn_y, canvas_w - int(canvas_w * 0.18), btn_y + int(canvas_h * 0.07)], radius=50, fill=(14, 165, 233))
+    d3.rounded_rectangle([int(canvas_w * 0.16), btn_y, canvas_w - int(canvas_w * 0.16), btn_y + int(canvas_h * 0.07)], radius=50, fill=(14, 165, 233))
     d3.text((canvas_w / 2, btn_y + int(canvas_h * 0.035)), "자세히 보기 & 구매하기 ➔", font=font_sub, fill=(255, 255, 255), anchor="mm")
 
     p3_path = "card3.png"
@@ -230,42 +291,17 @@ def create_card_news_pack(book_title, author, event_info, cover_url=None, aspect
     return image_paths
 
 # ----------------------------------------------------
-# 5. Gemini AI 맞춤 홍보 문구 생성
+# 6. 텔레그램 대화 핸들러
 # ----------------------------------------------------
-def generate_draft(book_title, author, event_info, feedback=None):
-    prompt = f"""
-    너는 도서 전문 마케터야. 아래 도서 정보와 요청사항에 맞춰 인스타그램 포스팅 문구를 작성해줘.
-    
-    - 도서명: {book_title}
-    - 저자: {author}
-    - 홍보 요청사항/내용: {event_info}
-
-    [작성 가이드]:
-    1. 서평 이벤트에만 국한하지 말고, 요청사항 내용({event_info})에 맞춰 도서 추천, 저자 소개, 책 속의 한 문장, 북토크/홍보 이슈 등 목적에 딱 맞는 매력적인 톤으로 작성할 것.
-    2. 독자의 흥미를 유발하는 독창적인 캐치프레이즈로 시작할 것.
-    3. 텔레그램 메세지 제한을 준수하기 위해 관련 해시태그 포함 전체 길이는 800자 이내로 작성할 것.
-    """
-    if feedback:
-        prompt += f"\n\n[사용자 수정 요청사항]: {feedback}\n위 요구사항을 적극 반영해서 800자 이내로 재생성해줘."
-
-    chat = client.chats.create(model="gemini-3.5-flash-lite")
-    response = chat.send_message(prompt)
-    
-    return response.text
-
-# ----------------------------------------------------
-# 6. 텔레그램 대화 핸들러 (첫 이미지 캡션 제외 및 메시지 분리 전송)
-# ----------------------------------------------------
-async def send_draft_pack(chat_id, context, data, text_prompt):
+async def send_draft_pack(chat_id, context, data, scenario_data):
     aspect = data.get("aspect_ratio", "4:5")
-    img_paths = create_card_news_pack(data["book_title"], data["author"], data["event_info"], data["cover_url"], aspect)
+    img_paths = create_card_news_pack(data["book_title"], data["author"], scenario_data, data["cover_url"], aspect)
 
-    # 1. 첫 이미지에 텍스트 캡션을 달지 않고 3장의 순수 템플릿 카드뉴스만 앨범 전송
     media = [InputMediaPhoto(media=open(p, "rb")) for p in img_paths]
     await context.bot.send_media_group(chat_id=chat_id, media=media)
 
-    # 2. 인스타그램 본문용 텍스트 문구는 별도 깔끔한 메시지로 분리하여 전송
-    draft_message = f"📌 **[인스타그램 본문 텍스트 초안]**\n\n{text_prompt}"
+    caption_text = scenario_data.get("caption", "")
+    draft_message = f"📌 **[인스타그램 본문 텍스트 초안]**\n\n{caption_text}"
     if len(draft_message) > 4000:
         draft_message = draft_message[:3900] + "...\n(길이 제한으로 일부 생략)"
 
@@ -277,7 +313,6 @@ async def send_draft_pack(chat_id, context, data, text_prompt):
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    # 본문 문구 및 승인 버튼 함께 전송
     await context.bot.send_message(
         chat_id=chat_id,
         text=draft_message,
@@ -295,10 +330,10 @@ async def start_draft(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user_drafts[chat_id] = event_data
     
-    draft_text = generate_draft(event_data["book_title"], event_data["author"], event_data["event_info"])
-    user_drafts[chat_id]["current_text"] = draft_text
+    scenario_data = generate_scenario_and_draft(event_data["book_title"], event_data["author"], event_data["event_info"])
+    user_drafts[chat_id]["scenario"] = scenario_data
     
-    await send_draft_pack(chat_id, context, event_data, draft_text)
+    await send_draft_pack(chat_id, context, event_data, scenario_data)
     return ConversationHandler.END
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -323,13 +358,13 @@ async def receive_feedback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     feedback_text = update.message.text
 
-    await update.message.reply_text("🔄 피드백과 비율 설정을 반영하여 템플릿 카드뉴스 3장을 재생성 중입니다...")
+    await update.message.reply_text("🔄 피드백을 반영하여 카드뉴스 시나리오와 3장 이미지를 재생성 중입니다...")
 
     data = user_drafts[chat_id]
-    new_draft = generate_draft(data["book_title"], data["author"], data["event_info"], feedback=feedback_text)
-    user_drafts[chat_id]["current_text"] = new_draft
+    new_scenario = generate_scenario_and_draft(data["book_title"], data["author"], data["event_info"], feedback=feedback_text)
+    user_drafts[chat_id]["scenario"] = new_scenario
     
-    await send_draft_pack(chat_id, context, data, new_draft)
+    await send_draft_pack(chat_id, context, data, new_scenario)
     return ConversationHandler.END
 
 def main():
