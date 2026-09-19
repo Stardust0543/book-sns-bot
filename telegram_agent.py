@@ -3,10 +3,8 @@ import json
 import logging
 import threading
 import warnings
+import asyncio
 import requests
-import textwrap
-from io import BytesIO
-from PIL import Image, ImageDraw, ImageFont
 from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
 from telegram.ext import (
@@ -20,6 +18,7 @@ from telegram.ext import (
 )
 import gspread
 from google import genai
+from playwright.async_api import async_playwright
 
 warnings.filterwarnings("ignore", category=UserWarning, module="google_genai")
 
@@ -37,7 +36,7 @@ def run_flask():
     web_app.run(host="0.0.0.0", port=port)
 
 # ----------------------------------------------------
-# 1. 환경 변수 및 폰트 설정
+# 1. 환경 변수 및 초기화
 # ----------------------------------------------------
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
@@ -53,40 +52,20 @@ WAITING_FINAL_APPROVAL = 3
 
 user_drafts = {}
 
-FONT_PATH = "NanumGothic.ttf"
-def get_font(size):
-    if not os.path.exists(FONT_PATH):
-        font_url = "https://github.com/google/fonts/raw/main/ofl/nanumgothic/NanumGothic-Bold.ttf"
-        try:
-            res = requests.get(font_url, timeout=10)
-            with open(FONT_PATH, "wb") as f:
-                f.write(res.content)
-        except Exception:
-            return ImageFont.load_default()
-    try:
-        return ImageFont.truetype(FONT_PATH, size)
-    except Exception:
-        return ImageFont.load_default()
-
 # ----------------------------------------------------
-# 2. Unsplash 스톡 이미지 가져오기
+# 2. Unsplash 감성 스톡 이미지 URL 가져오기
 # ----------------------------------------------------
-def get_free_stock_image(keyword="history,book,library", width=1080, height=1350):
+def get_unsplash_bg_url(keyword="history,book,library"):
     try:
         if UNSPLASH_ACCESS_KEY:
             url = f"https://api.unsplash.com/photos/random?query={keyword}&client_id={UNSPLASH_ACCESS_KEY}"
             res = requests.get(url, timeout=5)
             if res.status_code == 200:
-                img_url = res.json()["urls"]["regular"]
-                img_res = requests.get(img_url, timeout=5)
-                img = Image.open(BytesIO(img_res.content)).convert("RGBA")
-                return img.resize((width, height))
-    except Exception:
-        pass
+                return res.json()["urls"]["regular"]
+    except Exception as e:
+        logging.error(f"Unsplash 이미지 로드 실패: {e}")
 
-    fallback_url = f"https://picsum.photos/{width}/{height}"
-    res = requests.get(fallback_url, timeout=5)
-    return Image.open(BytesIO(res.content)).convert("RGBA")
+    return "https://images.unsplash.com/photo-1457369804613-52c61a468e7d?auto=format&fit=crop&w=1080&q=80"
 
 # ----------------------------------------------------
 # 3. 구글 시트 연동
@@ -122,7 +101,7 @@ def get_pending_event_from_sheet():
     return None
 
 # ----------------------------------------------------
-# 4. Gemini AI 시나리오 기획
+# 4. Gemini AI 전문 시나리오 기획 생성
 # ----------------------------------------------------
 def generate_pro_scenario(book_title, author, event_info, feedback=None):
     prompt = f"""
@@ -224,153 +203,133 @@ def generate_pro_scenario(book_title, author, event_info, feedback=None):
     return data
 
 # ----------------------------------------------------
-# 5. 상단 영문 문구가 완전 제거된 카드뉴스 합성 함수
+# 5. HTML/CSS 기반 전문 디자인 템플릿 생성 엔진
 # ----------------------------------------------------
-def create_card_news_from_scenario(book_title, author, scenario_data, cover_url=None, aspect_ratio="4:5"):
-    image_paths = []
+def build_html_template(slide, book_title, author, cover_url, bg_url):
+    s_type = slide.get("type", "detail")
+    head = slide.get("head_copy", "")
+    sub = slide.get("sub_copy", "")
+    body = slide.get("body", "").replace("\n", "<br>")
+
+    css_common = f"""
+    @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css');
+    * {{ box-sizing: border-box; margin: 0; padding: 0; font-family: 'Pretendard', sans-serif; }}
+    body {{ width: 1080px; height: 1350px; overflow: hidden; background: #0f172a; position: relative; }}
+    .bg-image {{
+        position: absolute; width: 100%; height: 100%;
+        background-image: url('{bg_url}');
+        background-size: cover; background-position: center;
+        filter: blur(8px) brightness(0.35); transform: scale(1.05);
+    }}
+    .overlay {{
+        position: absolute; width: 100%; height: 100%;
+        background: linear-gradient(180deg, rgba(15,23,42,0.3) 0%, rgba(15,23,42,0.88) 100%);
+    }}
+    .container {{
+        position: relative; z-index: 10; width: 100%; height: 100%;
+        padding: 90px 75px; display: flex; flex-direction: column;
+        justify-content: center; align-items: center; color: #fff; text-align: center;
+    }}
+    .glass-card {{
+        background: rgba(255, 255, 255, 0.07); backdrop-filter: blur(20px);
+        border: 1px solid rgba(255, 255, 255, 0.16); border-radius: 36px;
+        box-shadow: 0 30px 60px rgba(0,0,0,0.5); width: 100%; padding: 60px 50px;
+    }}
+    """
+
+    if s_type == "cover":
+        cover_img_html = f'<img src="{cover_url}" class="book-cover">' if cover_url else ''
+        html = f"""
+        <!DOCTYPE html><html><head><style>{css_common}
+        .book-cover {{
+            width: 390px; height: 550px; object-fit: cover; border-radius: 20px;
+            box-shadow: 0 30px 60px rgba(0,0,0,0.8); border: 1px solid rgba(255,255,255,0.25);
+            margin-bottom: 40px;
+        }}
+        .head-title {{ font-size: 52px; font-weight: 800; color: #ffffff; line-height: 1.35; word-break: keep-all; text-shadow: 0 4px 20px rgba(0,0,0,0.6); }}
+        .sub-title {{ font-size: 28px; color: #cbd5e1; font-weight: 500; margin-top: 24px; word-break: keep-all; line-height: 1.4; }}
+        .book-meta {{ font-size: 24px; color: #94a3b8; font-weight: 600; margin-top: 36px; }}
+        </style></head><body>
+        <div class="bg-image"></div><div class="overlay"></div>
+        <div class="container">
+            {cover_img_html}
+            <div class="head-title">{head}</div>
+            <div class="sub-title">{sub}</div>
+            <div class="book-meta">《{book_title}》 {author} 저</div>
+        </div></body></html>
+        """
+    elif s_type == "quote":
+        html = f"""
+        <!DOCTYPE html><html><head><style>{css_common}
+        .quote-icon {{ font-size: 140px; color: #38bdf8; opacity: 0.8; font-family: Georgia, serif; line-height: 0.8; margin-bottom: 20px; }}
+        .quote-text {{ font-size: 54px; font-weight: 800; color: #ffffff; line-height: 1.4; word-break: keep-all; margin-bottom: 30px; text-shadow: 0 4px 20px rgba(0,0,0,0.5); }}
+        .quote-sub {{ font-size: 28px; color: #cbd5e1; font-weight: 500; word-break: keep-all; line-height: 1.5; }}
+        </style></head><body>
+        <div class="bg-image"></div><div class="overlay"></div>
+        <div class="container">
+            <div class="glass-card">
+                <div class="quote-icon">“</div>
+                <div class="quote-text">{head}</div>
+                <div class="quote-sub">{body}</div>
+            </div>
+        </div></body></html>
+        """
+    elif s_type == "cta":
+        html = f"""
+        <!DOCTYPE html><html><head><style>{css_common}
+        .cta-box {{ background: #ffffff; border-radius: 36px; padding: 70px 50px; color: #0f172a; box-shadow: 0 30px 60px rgba(0,0,0,0.4); width: 100%; }}
+        .cta-head {{ font-size: 48px; font-weight: 800; color: #0f172a; line-height: 1.35; margin-bottom: 30px; word-break: keep-all; }}
+        .cta-sub {{ font-size: 30px; font-weight: 600; color: #334155; line-height: 1.5; word-break: keep-all; margin-bottom: 40px; }}
+        .cta-footer {{ font-size: 24px; font-weight: 700; color: #0284c7; background: #e0f2fe; padding: 20px 30px; border-radius: 50px; display: inline-block; }}
+        </style></head><body>
+        <div class="bg-image"></div><div class="overlay"></div>
+        <div class="container">
+            <div class="cta-box">
+                <div class="cta-head">{head}</div>
+                <div class="cta-sub">{sub}</div>
+                <div class="cta-footer">전국 온·오프라인 서점에서 만나보실 수 있습니다</div>
+            </div>
+        </div></body></html>
+        """
+    else: # detail / background
+        html = f"""
+        <!DOCTYPE html><html><head><style>{css_common}
+        .detail-head {{ font-size: 46px; font-weight: 800; color: #ffffff; margin-bottom: 40px; line-height: 1.35; word-break: keep-all; text-shadow: 0 4px 15px rgba(0,0,0,0.5); }}
+        .detail-body {{ font-size: 30px; font-weight: 500; color: #f1f5f9; line-height: 1.7; word-break: keep-all; text-align: left; }}
+        </style></head><body>
+        <div class="bg-image"></div><div class="overlay"></div>
+        <div class="container">
+            <div class="detail-head">{head}</div>
+            <div class="glass-card">
+                <div class="detail-body">{body}</div>
+            </div>
+        </div></body></html>
+        """
+    return html
+
+async def render_html_to_images(book_title, author, scenario_data, cover_url):
+    bg_url = get_unsplash_bg_url("history,book,library")
     slides = scenario_data.get("slides", [])
-    
-    if aspect_ratio == "1:1":
-        canvas_w, canvas_h = 1080, 1080
-    elif aspect_ratio == "1.91:1":
-        canvas_w, canvas_h = 1080, 566
-    else:
-        canvas_w, canvas_h = 1080, 1350
+    img_paths = []
 
-    font_huge = get_font(int(canvas_h * 0.046))
-    font_title = get_font(int(canvas_h * 0.038))
-    font_sub = get_font(int(canvas_h * 0.026))
-    font_body = get_font(int(canvas_h * 0.023))
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        page = await browser.new_page(viewport={"width": 1080, "height": 1350})
 
-    cover_img = None
-    if cover_url and cover_url.startswith("http"):
-        try:
-            res = requests.get(cover_url, timeout=5)
-            cover_img = Image.open(BytesIO(res.content)).convert("RGBA")
-        except Exception:
-            pass
-
-    bg_img = get_free_stock_image("history,book,library", canvas_w, canvas_h)
-
-    for idx, slide in enumerate(slides, start=1):
-        s_type = slide.get("type", "detail")
-        c = bg_img.copy()
-        
-        # 1) 표지 슬라이드
-        if s_type == "cover" or idx == 1:
-            overlay = Image.new("RGBA", (canvas_w, canvas_h), (10, 15, 30, 185))
-            c = Image.alpha_composite(c, overlay)
-            d = ImageDraw.Draw(c)
-
-            if cover_img:
-                img_temp = cover_img.copy()
-                max_h = int(canvas_h * 0.48)
-                img_temp.thumbnail((int(canvas_w * 0.58), max_h))
-                w_size, h_size = img_temp.size
-                cover_x = (canvas_w - w_size) // 2
-                cover_y = int(canvas_h * 0.12)
-                
-                d.rounded_rectangle([cover_x-14, cover_y-14, cover_x+w_size+14, cover_y+h_size+14], radius=18, fill=(255, 255, 255, 30))
-                c.paste(img_temp, (cover_x, cover_y), img_temp)
-                text_y = cover_y + h_size + int(canvas_h * 0.06)
-            else:
-                text_y = canvas_h // 2
-
-            head = slide.get("head_copy", "")
-            h_lines = textwrap.wrap(head, width=18)
-            for i, l in enumerate(h_lines[:2]):
-                d.text((canvas_w / 2, text_y + (i * int(canvas_h * 0.05))), l, font=font_huge, fill=(255, 255, 255), anchor="mm")
-
-            sub = slide.get("sub_copy", "")
-            s_lines = textwrap.wrap(sub, width=24)
-            start_sub_y = text_y + (len(h_lines[:2]) * int(canvas_h * 0.05)) + int(canvas_h * 0.04)
-            for i, l in enumerate(s_lines[:2]):
-                d.text((canvas_w / 2, start_sub_y + (i * int(canvas_h * 0.035))), l, font=font_sub, fill=(203, 213, 225), anchor="mm")
-
-            d.text((canvas_w / 2, canvas_h - int(canvas_h * 0.06)), f"《{book_title}》 {author} 저", font=font_body, fill=(148, 163, 184), anchor="mm")
-
-        # 2) 명문장 인용구 슬라이드
-        elif s_type == "quote":
-            overlay = Image.new("RGBA", (canvas_w, canvas_h), (15, 23, 42, 230))
-            c = Image.alpha_composite(c, overlay)
-            d = ImageDraw.Draw(c)
-
-            font_q = get_font(int(canvas_h * 0.14))
-            d.text((canvas_w / 2, int(canvas_h * 0.18)), "“", font=font_q, fill=(56, 189, 248, 140), anchor="mm")
-
-            head = slide.get("head_copy", "")
-            h_lines = textwrap.wrap(head, width=16)
-            start_y = int(canvas_h * 0.32)
-            for i, l in enumerate(h_lines):
-                d.text((canvas_w / 2, start_y + (i * int(canvas_h * 0.06))), l, font=font_huge, fill=(255, 255, 255), anchor="mm")
-
-            body = slide.get("body", "")
-            b_lines = textwrap.wrap(body, width=22)
-            b_start_y = start_y + (len(h_lines) * int(canvas_h * 0.06)) + int(canvas_h * 0.08)
-            for i, l in enumerate(b_lines[:3]):
-                d.text((canvas_w / 2, b_start_y + (i * int(canvas_h * 0.04))), l, font=font_sub, fill=(148, 163, 184), anchor="mm")
-
-        # 3) 마무리 CTA 슬라이드
-        elif s_type == "cta" or idx == len(slides):
-            c = Image.new("RGBA", (canvas_w, canvas_h), (248, 250, 252))
-            d = ImageDraw.Draw(c)
-
-            header_h = int(canvas_h * 0.35)
-            header_bg = bg_img.crop((0, 0, canvas_w, header_h))
-            overlay_h = Image.new("RGBA", (canvas_w, header_h), (15, 23, 42, 140))
-            header_bg = Image.alpha_composite(header_bg, overlay_h)
-            c.paste(header_bg, (0, 0))
-
-            head = slide.get("head_copy", "")
-            h_lines = textwrap.wrap(head, width=16)
-            for i, l in enumerate(h_lines[:2]):
-                d.text((canvas_w / 2, int(header_h * 0.50) + (i * int(canvas_h * 0.05))), l, font=font_title, fill=(255, 255, 255), anchor="mm")
-
-            box_m = int(canvas_w * 0.08)
-            card_y = header_h + int(canvas_h * 0.06)
-            card_h = canvas_h - header_h - int(canvas_h * 0.12)
+        for idx, slide in enumerate(slides, start=1):
+            html_content = build_html_template(slide, book_title, author, cover_url, bg_url)
+            await page.set_content(html_content)
+            await page.wait_for_timeout(300)
             
-            d.rounded_rectangle([box_m, card_y, canvas_w - box_m, card_y + card_h], radius=28, fill=(255, 255, 255), outline=(226, 232, 240), width=2)
-            
-            sub = slide.get("sub_copy", slide.get("body", ""))
-            s_lines = textwrap.wrap(sub, width=20)
-            for i, l in enumerate(s_lines[:4]):
-                d.text((canvas_w / 2, card_y + int(card_h * 0.30) + (i * int(canvas_h * 0.045))), l, font=font_sub, fill=(30, 41, 59), anchor="mm")
+            output_path = f"card_{idx}.png"
+            await page.screenshot(path=output_path)
+            img_paths.append(output_path)
 
-            d.text((canvas_w / 2, card_y + card_h - int(canvas_h * 0.10)), "전국 온·오프라인 서점에서 만나보실 수 있습니다.", font=font_body, fill=(100, 116, 139), anchor="mm")
-
-        # 4) 일반 스토리 슬라이드
-        else:
-            overlay = Image.new("RGBA", (canvas_w, canvas_h), (15, 23, 42, 225))
-            c = Image.alpha_composite(c, overlay)
-            d = ImageDraw.Draw(c)
-
-            head = slide.get("head_copy", "")
-            h_lines = textwrap.wrap(head, width=16)
-            for i, l in enumerate(h_lines[:2]):
-                d.text((canvas_w / 2, int(canvas_h * 0.16) + (i * int(canvas_h * 0.05))), l, font=font_huge, fill=(255, 255, 255), anchor="mm")
-
-            box_m = int(canvas_w * 0.08)
-            box_y = int(canvas_h * 0.32)
-            box_h = int(canvas_h * 0.54)
-            d.rounded_rectangle([box_m, box_y, canvas_w - box_m, box_y + box_h], radius=24, fill=(30, 41, 59, 230), outline=(71, 85, 105), width=2)
-
-            body = slide.get("body", "")
-            b_lines = []
-            for para in body.split("\n"):
-                b_lines.extend(textwrap.wrap(para, width=20))
-
-            for i, l in enumerate(b_lines[:8]):
-                d.text((canvas_w / 2, box_y + int(box_h * 0.20) + (i * int(canvas_h * 0.045))), l, font=font_sub, fill=(241, 245, 249), anchor="mm")
-
-        p_path = f"card_{idx}.png"
-        c.convert("RGB").save(p_path, "PNG")
-        image_paths.append(p_path)
-
-    return image_paths
+        await browser.close()
+    return img_paths
 
 # ----------------------------------------------------
-# 6. 텔레그램 대화 핸들러
+# 6. 텔레그램 핸들러
 # ----------------------------------------------------
 async def start_draft(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -432,9 +391,9 @@ async def handle_scenario_action(update: Update, context: ContextTypes.DEFAULT_T
         scenario = data["scenario"]
         slide_count = len(scenario.get("slides", []))
         
-        await query.edit_message_text(text=f"🎨 확정된 시나리오로 고화질 카드뉴스 이미지 {slide_count}장을 생성 중입니다. 잠시만 기다려 주세요...")
+        await query.edit_message_text(text=f"🎨 HTML/CSS 엔진으로 고화질 카드뉴스 이미지 {slide_count}장을 생성 중입니다. 잠시만 기다려 주세요...")
         
-        img_paths = create_card_news_from_scenario(data["book_title"], data["author"], scenario, data["cover_url"], data.get("aspect_ratio", "4:5"))
+        img_paths = await render_html_to_images(data["book_title"], data["author"], scenario, data["cover_url"])
         
         media = [InputMediaPhoto(media=open(p, "rb")) for p in img_paths]
         await context.bot.send_media_group(chat_id=chat_id, media=media)
