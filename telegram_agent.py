@@ -6,7 +6,7 @@ import requests
 from io import BytesIO
 from PIL import Image, ImageDraw, ImageFont
 from flask import Flask
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -20,7 +20,7 @@ import gspread
 from google import genai
 
 # ----------------------------------------------------
-# 0. Render 포트 스캔 대응용 미니 웹서버 (배포 속도 단축)
+# 0. Render 포트 스캔 대응용 미니 웹서버
 # ----------------------------------------------------
 web_app = Flask(__name__)
 
@@ -33,7 +33,7 @@ def run_flask():
     web_app.run(host="0.0.0.0", port=port)
 
 # ----------------------------------------------------
-# 1. 환경 변수 설정
+# 1. 환경 변수 및 한글 폰트 자동 다운로드
 # ----------------------------------------------------
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
@@ -44,6 +44,24 @@ logging.basicConfig(level=logging.INFO)
 
 WAITING_FOR_FEEDBACK = 1
 user_drafts = {}
+
+FONT_PATH = "NanumGothic.ttf"
+def get_font(size):
+    """나눔고딕 폰트 파일이 없으면 자동으로 다운로드하여 적용합니다."""
+    if not os.path.exists(FONT_PATH):
+        font_url = "https://github.com/google/fonts/raw/main/ofl/nanumgothic/NanumGothic-Bold.ttf"
+        try:
+            res = requests.get(font_url, timeout=10)
+            with open(FONT_PATH, "wb") as f:
+                f.write(res.content)
+            logging.info("한글 폰트(NanumGothic) 다운로드 완료")
+        except Exception as e:
+            logging.error(f"폰트 다운로드 실패: {e}")
+            return ImageFont.load_default()
+    try:
+        return ImageFont.truetype(FONT_PATH, size)
+    except Exception:
+        return ImageFont.load_default()
 
 # ----------------------------------------------------
 # 2. 구글 시트 연동 함수
@@ -81,48 +99,86 @@ def get_pending_event_from_sheet():
     return None
 
 # ----------------------------------------------------
-# 3. Pillow 카드뉴스 이미지 합성 함수 (가독성/폰트크기 개선)
+# 3. Pillow 카드뉴스 3장 자동 합성 함수
 # ----------------------------------------------------
-def create_card_news(book_title, event_info, cover_url=None, output_path="cardnews.png"):
+def create_card_news_pack(book_title, author, event_info, cover_url=None):
+    image_paths = []
     canvas_w, canvas_h = 1080, 1080
-    canvas = Image.new("RGBA", (canvas_w, canvas_h), (245, 247, 250))
-    draw = ImageDraw.Draw(canvas)
 
-    cover_y = 100
-    h_size = 480
+    font_title = get_font(52)
+    font_sub = get_font(36)
+    font_body = get_font(30)
+
+    # [표지 이미지 다운로드]
+    cover_img = None
     if cover_url and cover_url.startswith("http"):
         try:
             res = requests.get(cover_url, timeout=5)
             cover_img = Image.open(BytesIO(res.content)).convert("RGBA")
-            cover_img.thumbnail((420, 580))
-            w_size, h_size = cover_img.size
-            cover_x = (canvas_w - w_size) // 2
-            
-            # 카드 그림자 효과
-            draw.rounded_rectangle([cover_x+12, cover_y+12, cover_x+w_size+12, cover_y+h_size+12], radius=16, fill=(210, 215, 222))
-            canvas.paste(cover_img, (cover_x, cover_y))
         except Exception as e:
-            logging.error(f"표지 이미지 로드 실패: {e}")
+            logging.error(f"표지 이미지 다운로드 실패: {e}")
 
-    # 기본 폰트 크기 확대 지정
-    try:
-        title_font = ImageFont.load_default(size=48)
-        info_font = ImageFont.load_default(size=36)
-    except TypeError:
-        title_font = ImageFont.load_default()
-        info_font = ImageFont.load_default()
-
-    text_start_y = cover_y + h_size + 80
+    # ===== 1장: 메인 표지 카드뉴스 =====
+    c1 = Image.new("RGBA", (canvas_w, canvas_h), (245, 247, 250))
+    d1 = ImageDraw.Draw(c1)
     
-    draw.text((canvas_w / 2, text_start_y), f"《{book_title}》", font=title_font, fill=(20, 20, 20), anchor="mm")
-    draw.text((canvas_w / 2, text_start_y + 90), event_info, font=info_font, fill=(60, 60, 60), anchor="mm")
+    if cover_img:
+        img_temp = cover_img.copy()
+        img_temp.thumbnail((440, 600))
+        w_size, h_size = img_temp.size
+        cover_x = (canvas_w - w_size) // 2
+        cover_y = 100
+        d1.rounded_rectangle([cover_x+12, cover_y+12, cover_x+w_size+12, cover_y+h_size+12], radius=16, fill=(210, 215, 222))
+        c1.paste(img_temp, (cover_x, cover_y), img_temp)
+        text_y = cover_y + h_size + 60
+    else:
+        text_y = 450
 
-    final_img = canvas.convert("RGB")
-    final_img.save(output_path, "PNG")
-    return output_path
+    d1.text((canvas_w / 2, text_y), f"《{book_title}》", font=font_title, fill=(20, 20, 20), anchor="mm")
+    d1.text((canvas_w / 2, text_y + 80), f"저자: {author}", font=font_sub, fill=(80, 80, 80), anchor="mm")
+    
+    p1_path = "card1.png"
+    c1.convert("RGB").save(p1_path, "PNG")
+    image_paths.append(p1_path)
+
+    # ===== 2장: 핵심 포인트 카드뉴스 =====
+    c2 = Image.new("RGBA", (canvas_w, canvas_h), (250, 252, 255))
+    d2 = ImageDraw.Draw(c2)
+    d2.rectangle([80, 80, canvas_w-80, canvas_h-80], outline=(220, 225, 230), width=4)
+    
+    d2.text((canvas_w / 2, 200), "BOOK HIGHLIGHT", font=font_sub, fill=(0, 102, 204), anchor="mm")
+    d2.text((canvas_w / 2, 300), f"《{book_title}》", font=font_title, fill=(20, 20, 20), anchor="mm")
+    
+    # 중앙 설명 상자
+    d2.rounded_rectangle([140, 420, canvas_w-140, 780], radius=20, fill=(235, 242, 250))
+    d2.text((canvas_w / 2, 520), "📌 주요 내용 및 핵심 포인트", font=font_sub, fill=(30, 30, 30), anchor="mm")
+    d2.text((canvas_w / 2, 620), event_info, font=font_body, fill=(60, 60, 60), anchor="mm")
+
+    p2_path = "card2.png"
+    c2.convert("RGB").save(p2_path, "PNG")
+    image_paths.append(p2_path)
+
+    # ===== 3장: 이벤트 & CTA 카드뉴스 =====
+    c3 = Image.new("RGBA", (canvas_w, canvas_h), (240, 244, 248))
+    d3 = ImageDraw.Draw(c3)
+    
+    d3.rounded_rectangle([100, 150, canvas_w-100, canvas_h-150], radius=30, fill=(255, 255, 255))
+    d3.text((canvas_w / 2, 280), "SPECIAL EVENT", font=font_sub, fill=(220, 50, 50), anchor="mm")
+    d3.text((canvas_w / 2, 400), "🎉 도서 출간 기념 이벤트", font=font_title, fill=(20, 20, 20), anchor="mm")
+    d3.text((canvas_w / 2, 520), event_info, font=font_sub, fill=(50, 50, 50), anchor="mm")
+    
+    # CTA 버튼 박스
+    d3.rounded_rectangle([200, 680, canvas_w-200, 780], radius=50, fill=(0, 102, 204))
+    d3.text((canvas_w / 2, 730), "프로필 링크에서 참여하기 ➔", font=font_sub, fill=(255, 255, 255), anchor="mm")
+
+    p3_path = "card3.png"
+    c3.convert("RGB").save(p3_path, "PNG")
+    image_paths.append(p3_path)
+
+    return image_paths
 
 # ----------------------------------------------------
-# 4. Gemini 문구 생성 (800자 이하 제한)
+# 4. Gemini 문구 생성 (800자 이하 제약)
 # ----------------------------------------------------
 def generate_draft(book_title, author, event_info, feedback=None):
     prompt = f"""
@@ -131,7 +187,7 @@ def generate_draft(book_title, author, event_info, feedback=None):
     - 저자: {author}
     - 이벤트 내용: {event_info}
     
-    [주의사항]: 텔레그램 메세지 길이 제한을 준수하기 위해 해시태그 포함 전체 문구 길이는 800자 이내로 간결하고 매력적으로 작성해줘.
+    [주의사항]: 텔레그램 메시지 길이 제한을 준수하기 위해 해시태그 포함 전체 문구 길이는 800자 이내로 간결하고 매력적으로 작성해줘.
     """
     if feedback:
         prompt += f"\n\n[사용자 수정 요청사항]: {feedback}\n위 요구사항을 적극 반영해서 800자 이내로 재생성해줘."
@@ -143,8 +199,34 @@ def generate_draft(book_title, author, event_info, feedback=None):
     return response.text
 
 # ----------------------------------------------------
-# 5. 텔레그램 대화 핸들러
+# 5. 텔레그램 대화 핸들러 (3장 앨범 전송)
 # ----------------------------------------------------
+async def send_draft_pack(chat_id, context, data, text_prompt):
+    img_paths = create_card_news_pack(data["book_title"], data["author"], data["event_info"], data["cover_url"])
+
+    caption_text = f"📌 **[도서 포스팅 초안 검토 요청]**\n\n{text_prompt}"
+    if len(caption_text) > 1000:
+        caption_text = caption_text[:990] + "...\n(글자 수 제한으로 일부 생략)"
+
+    # 3장 이미지를 앨범(MediaGroup)으로 구성
+    media = []
+    for i, p in enumerate(img_paths):
+        if i == 0:
+            media.append(InputMediaPhoto(media=open(p, "rb"), caption=caption_text, parse_mode="Markdown"))
+        else:
+            media.append(InputMediaPhoto(media=open(p, "rb")))
+
+    await context.bot.send_media_group(chat_id=chat_id, media=media)
+
+    keyboard = [
+        [
+            InlineKeyboardButton("👍 승인 및 업로드", callback_data="approve"),
+            InlineKeyboardButton("✏️ 수정 요청", callback_data="request_edit"),
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await context.bot.send_message(chat_id=chat_id, text="👇 아래 버튼을 눌러 승인하거나 수정을 요청해 주세요.", reply_markup=reply_markup)
+
 async def start_draft(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     
@@ -158,29 +240,7 @@ async def start_draft(update: Update, context: ContextTypes.DEFAULT_TYPE):
     draft_text = generate_draft(event_data["book_title"], event_data["author"], event_data["event_info"])
     user_drafts[chat_id]["current_text"] = draft_text
     
-    img_path = create_card_news(event_data["book_title"], event_data["event_info"], event_data["cover_url"])
-
-    keyboard = [
-        [
-            InlineKeyboardButton("👍 승인 및 업로드", callback_data="approve"),
-            InlineKeyboardButton("✏️ 수정 요청", callback_data="request_edit"),
-        ]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-
-    # 캡션 길이 제한(1,024자 제한) 안전 처리
-    caption_text = f"📌 **[도서 포스팅 초안 검토 요청]**\n\n{draft_text}"
-    if len(caption_text) > 1000:
-        caption_text = caption_text[:990] + "...\n(글자 수 제한으로 일부 생략)"
-
-    with open(img_path, "rb") as photo:
-        await context.bot.send_photo(
-            chat_id=chat_id,
-            photo=photo,
-            caption=caption_text,
-            parse_mode="Markdown",
-            reply_markup=reply_markup
-        )
+    await send_draft_pack(chat_id, context, event_data, draft_text)
     return ConversationHandler.END
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -194,59 +254,24 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ws = user_drafts[chat_id]["worksheet"]
             ws.update_cell(row_idx, 5, "Done")
 
-        base_caption = query.message.caption or ""
-        approved_caption = f"{base_caption}\n\n✅ **[승인 완료]** 포스팅이 승인되었으며 시트 상태가 'Done'으로 변경되었습니다!"
-        if len(approved_caption) > 1024:
-            approved_caption = approved_caption[:1000] + "..."
-
-        await query.edit_message_caption(
-            caption=approved_caption
-        )
+        await query.edit_message_text(text="✅ **[승인 완료]** 포스팅이 승인되었으며 구글 시트 상태가 'Done'으로 변경되었습니다!")
         return ConversationHandler.END
 
     elif query.data == "request_edit":
-        base_caption = query.message.caption or ""
-        request_caption = f"{base_caption}\n\n✏️ **[수정 요청]** 수정 사항을 메시지로 입력해 주세요."
-        if len(request_caption) > 1024:
-            request_caption = request_caption[:1000] + "..."
-
-        await query.edit_message_caption(
-            caption=request_caption
-        )
+        await query.edit_message_text(text="✏️ **[수정 요청]** 수정 및 보완할 사항을 메시지로 입력해 주세요.")
         return WAITING_FOR_FEEDBACK
 
 async def receive_feedback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     feedback_text = update.message.text
 
-    await update.message.reply_text("🔄 피드백을 반영하여 초안과 이미지를 재생성 중입니다...")
+    await update.message.reply_text("🔄 피드백을 반영하여 초안과 3장의 카드뉴스 이미지를 재생성 중입니다...")
 
     data = user_drafts[chat_id]
     new_draft = generate_draft(data["book_title"], data["author"], data["event_info"], feedback=feedback_text)
     user_drafts[chat_id]["current_text"] = new_draft
     
-    img_path = create_card_news(data["book_title"], data["event_info"], data["cover_url"])
-
-    keyboard = [
-        [
-            InlineKeyboardButton("👍 승인 및 업로드", callback_data="approve"),
-            InlineKeyboardButton("✏️ 수정 요청", callback_data="request_edit"),
-        ]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-
-    caption_text = f"📌 **[수정된 포스팅 초안]**\n\n{new_draft}"
-    if len(caption_text) > 1000:
-        caption_text = caption_text[:990] + "...\n(글자 수 제한으로 일부 생략)"
-
-    with open(img_path, "rb") as photo:
-        await context.bot.send_photo(
-            chat_id=chat_id,
-            photo=photo,
-            caption=caption_text,
-            parse_mode="Markdown",
-            reply_markup=reply_markup
-        )
+    await send_draft_pack(chat_id, context, data, new_draft)
     return ConversationHandler.END
 
 def main():
