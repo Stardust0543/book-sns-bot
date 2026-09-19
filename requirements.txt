@@ -4,4 +4,4 @@ gspread
 google-genai
 python-telegram-bot
 Pillow
-html2image
+playwright
