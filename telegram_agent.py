@@ -43,6 +43,14 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 GOOGLE_SERVICE_ACCOUNT_JSON = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
 UNSPLASH_ACCESS_KEY = os.environ.get("UNSPLASH_ACCESS_KEY")
 
+# ---- Instagram Graph API (무료: 별도 비용 없이 메타 개발자 계정만 있으면 됨) ----
+# 인스타그램 비즈니스 계정 + 연결된 페이스북 페이지 + 장기 액세스 토큰 발급 후 아래 두 값만 채우면
+# handle_final_approval()에서 자동으로 실제 캐러셀 게시까지 수행합니다.
+# 값이 비어 있으면 기존처럼 "수동 게시 후 Done 처리"로 동작합니다 (하위 호환).
+IG_ACCESS_TOKEN = os.environ.get("IG_ACCESS_TOKEN")
+IG_USER_ID = os.environ.get("IG_USER_ID")
+GRAPH_API_VERSION = "v21.0"
+
 client = genai.Client(api_key=GEMINI_API_KEY)
 logging.basicConfig(level=logging.INFO)
 
@@ -54,16 +62,23 @@ user_drafts = {}
 
 # ----------------------------------------------------
 # 2. Unsplash 감성 스톡 이미지 URL 가져오기
+#    (무료 티어 시간당 50회 제한 보호용 1회 재시도 + 짧은 백오프)
 # ----------------------------------------------------
 def get_unsplash_bg_url(keyword="history,book,library"):
-    try:
-        if UNSPLASH_ACCESS_KEY:
-            url = f"https://api.unsplash.com/photos/random?query={keyword}&client_id={UNSPLASH_ACCESS_KEY}"
-            res = requests.get(url, timeout=5)
-            if res.status_code == 200:
-                return res.json()["urls"]["regular"]
-    except Exception as e:
-        logging.error(f"Unsplash 이미지 로드 실패: {e}")
+    if UNSPLASH_ACCESS_KEY:
+        for attempt in range(2):
+            try:
+                url = f"https://api.unsplash.com/photos/random?query={keyword}&client_id={UNSPLASH_ACCESS_KEY}"
+                res = requests.get(url, timeout=5)
+                if res.status_code == 200:
+                    return res.json()["urls"]["regular"]
+                if res.status_code == 429:
+                    logging.warning("Unsplash 요청 한도 초과 — 기본 배경으로 대체")
+                    break
+            except Exception as e:
+                logging.error(f"Unsplash 이미지 로드 실패(시도 {attempt + 1}/2): {e}")
+                import time
+                time.sleep(0.5)
 
     return "https://images.unsplash.com/photo-1457369804613-52c61a468e7d?auto=format&fit=crop&w=1080&q=80"
 
@@ -531,7 +546,12 @@ async def render_html_to_images(book_title, author, scenario_data, cover_url):
                 )
                 # 최대 10초 대기 시간 제한 설정
                 await page.set_content(html_content, timeout=10000)
-                await page.wait_for_timeout(200)  # 스타일 렌더링 완료 대기
+                # Pretendard 웹폰트가 실제로 로드된 뒤 캡처 (감으로 200ms 기다리던 방식 대체)
+                try:
+                    await page.evaluate("document.fonts.ready")
+                    await page.wait_for_function("document.fonts.status === 'loaded'", timeout=3000)
+                except Exception:
+                    await page.wait_for_timeout(300)  # 폰트 로딩 확인 실패 시 최소 대기로 폴백
 
                 output_path = f"card_{idx}.png"
                 await page.screenshot(path=output_path, timeout=10000)
@@ -613,7 +633,14 @@ async def handle_scenario_action(update: Update, context: ContextTypes.DEFAULT_T
 
         if img_paths:
             media = [InputMediaPhoto(media=open(p, "rb")) for p in img_paths]
-            await context.bot.send_media_group(chat_id=chat_id, media=media)
+            sent_messages = await context.bot.send_media_group(chat_id=chat_id, media=media)
+
+            # 텔레그램에 올라간 이미지의 file_id를 저장해둠 — Instagram 게시 시
+            # 별도 스토리지(S3 등, 유료) 없이 텔레그램 파일의 공개 URL을 그대로 재사용하기 위함
+            user_drafts[chat_id]["telegram_file_ids"] = [
+                msg.photo[-1].file_id for msg in sent_messages if msg.photo
+            ]
+            user_drafts[chat_id]["caption"] = scenario.get("caption", "")
 
             keyboard = [
                 [
@@ -676,12 +703,95 @@ async def receive_scenario_feedback(update: Update, context: ContextTypes.DEFAUL
     await context.bot.send_message(chat_id=chat_id, text=scenario_msg, parse_mode="Markdown", reply_markup=reply_markup)
     return WAITING_SCENARIO_ACTION
 
+# ----------------------------------------------------
+# 8. Instagram Graph API 실제 게시 (무료)
+#    - 별도 스토리지(S3 등) 없이 텔레그램에 이미 올라간 파일의 공개 URL을
+#      그대로 Instagram에 넘겨서 이미지 호스팅 비용을 0으로 만듦
+#    - IG_ACCESS_TOKEN / IG_USER_ID 둘 다 없으면 이 함수는 호출되지 않고
+#      기존처럼 "수동 게시 후 Done" 흐름으로 자동 폴백
+# ----------------------------------------------------
+async def get_telegram_file_public_urls(bot, file_ids):
+    urls = []
+    for file_id in file_ids:
+        tg_file = await bot.get_file(file_id)
+        # python-telegram-bot이 만들어주는 file_path는 이미 완전한 공개 다운로드 URL
+        urls.append(tg_file.file_path)
+    return urls
+
+
+def post_carousel_to_instagram(image_urls, caption):
+    """
+    Instagram Graph API로 캐러셀 게시.
+    1) 각 이미지를 is_carousel_item=true로 미디어 컨테이너 생성
+    2) 모든 컨테이너 id를 모아 media_type=CAROUSEL 컨테이너 생성
+    3) 발행
+    성공 시 (True, ig_media_id) / 실패 시 (False, 에러메시지) 반환.
+    """
+    graph_base = f"https://graph.facebook.com/{GRAPH_API_VERSION}"
+    try:
+        children = []
+        for img_url in image_urls:
+            resp = requests.post(
+                f"{graph_base}/{IG_USER_ID}/media",
+                data={
+                    "image_url": img_url,
+                    "is_carousel_item": "true",
+                    "access_token": IG_ACCESS_TOKEN,
+                },
+                timeout=20,
+            )
+            resp.raise_for_status()
+            children.append(resp.json()["id"])
+
+        carousel_resp = requests.post(
+            f"{graph_base}/{IG_USER_ID}/media",
+            data={
+                "media_type": "CAROUSEL",
+                "children": ",".join(children),
+                "caption": caption,
+                "access_token": IG_ACCESS_TOKEN,
+            },
+            timeout=20,
+        )
+        carousel_resp.raise_for_status()
+        creation_id = carousel_resp.json()["id"]
+
+        publish_resp = requests.post(
+            f"{graph_base}/{IG_USER_ID}/media_publish",
+            data={"creation_id": creation_id, "access_token": IG_ACCESS_TOKEN},
+            timeout=20,
+        )
+        publish_resp.raise_for_status()
+        return True, publish_resp.json().get("id")
+    except Exception as e:
+        logging.error(f"Instagram 게시 실패: {e}")
+        return False, str(e)
+
+
 async def handle_final_approval(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     chat_id = query.message.chat_id
 
     if query.data == "final_done":
+        data = user_drafts.get(chat_id, {})
+
+        # IG 자격 증명이 설정돼 있으면 실제로 인스타그램에 캐러셀을 게시
+        if IG_ACCESS_TOKEN and IG_USER_ID and data.get("telegram_file_ids"):
+            await query.edit_message_text(text="📤 Instagram에 캐러셀 게시 중입니다...")
+            try:
+                image_urls = await get_telegram_file_public_urls(context.bot, data["telegram_file_ids"])
+                success, result = post_carousel_to_instagram(image_urls, data.get("caption", ""))
+            except Exception as e:
+                success, result = False, str(e)
+
+            if not success:
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=f"⚠️ Instagram 게시에 실패했습니다: {result}\n수동으로 게시 후 다시 완료 버튼을 눌러주세요.",
+                )
+                return WAITING_FINAL_APPROVAL
+
         if chat_id in user_drafts and "worksheet" in user_drafts[chat_id]:
             row_idx = user_drafts[chat_id]["row_index"]
             ws = user_drafts[chat_id]["worksheet"]
