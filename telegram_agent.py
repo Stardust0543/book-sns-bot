@@ -20,7 +20,6 @@ from telegram.ext import (
 import gspread
 from google import genai
 
-# SDK 경고 메시지 로깅 억제
 warnings.filterwarnings("ignore", category=UserWarning, module="google_genai")
 
 # ----------------------------------------------------
@@ -68,26 +67,27 @@ def get_font(size):
         return ImageFont.load_default()
 
 # ----------------------------------------------------
-# 2. Unsplash 무료 고화질 실사 이미지 가져오기
+# 2. Unsplash 고화질 무료 이미지 가져오기
 # ----------------------------------------------------
-def get_free_stock_image(keyword="reading"):
+def get_free_stock_image(keyword="reading", width=1080, height=1350):
     try:
         if UNSPLASH_ACCESS_KEY:
-            url = f"https://api.unsplash.com/photos/random?query={keyword}&orientation=squarish&client_id={UNSPLASH_ACCESS_KEY}"
+            url = f"https://api.unsplash.com/photos/random?query={keyword}&client_id={UNSPLASH_ACCESS_KEY}"
             res = requests.get(url, timeout=5)
             if res.status_code == 200:
                 img_url = res.json()["urls"]["regular"]
                 img_res = requests.get(img_url, timeout=5)
-                return Image.open(BytesIO(img_res.content)).convert("RGBA")
+                img = Image.open(BytesIO(img_res.content)).convert("RGBA")
+                return img.resize((width, height))
     except Exception as e:
         logging.error(f"Unsplash 이미지 로드 실패: {e}")
 
-    fallback_url = "https://picsum.photos/1080/1080"
+    fallback_url = f"https://picsum.photos/{width}/{height}"
     res = requests.get(fallback_url, timeout=5)
     return Image.open(BytesIO(res.content)).convert("RGBA")
 
 # ----------------------------------------------------
-# 3. 구글 시트 연동 함수
+# 3. 구글 시트 연동 (Aspect 비율 필드 지원)
 # ----------------------------------------------------
 def get_pending_event_from_sheet():
     try:
@@ -114,6 +114,7 @@ def get_pending_event_from_sheet():
                     "author": row[1] if len(row) > 1 else "저자 미정",
                     "event_info": row[2] if len(row) > 2 else "도서 홍보 요청",
                     "cover_url": row[3] if len(row) > 3 else "",
+                    "aspect_ratio": row[5].strip() if len(row) > 5 and row[5].strip() else "4:5",
                     "worksheet": worksheet
                 }
     except Exception as e:
@@ -121,16 +122,24 @@ def get_pending_event_from_sheet():
     return None
 
 # ----------------------------------------------------
-# 4. 실사 배경 합성 카드뉴스 3장 생성 함수
+# 4. 인스타그램 비율별 템플릿 카드뉴스 합성
 # ----------------------------------------------------
-def create_card_news_pack(book_title, author, event_info, cover_url=None):
+def create_card_news_pack(book_title, author, event_info, cover_url=None, aspect_ratio="4:5"):
     image_paths = []
-    canvas_w, canvas_h = 1080, 1080
+    
+    # 비율에 따른 캔버스 해상도 설정
+    if aspect_ratio == "1:1":
+        canvas_w, canvas_h = 1080, 1080
+    elif aspect_ratio == "1.91:1":
+        canvas_w, canvas_h = 1080, 566
+    else: # 기본값 4:5 (세로형 인스타그램 최적화)
+        canvas_w, canvas_h = 1080, 1350
 
-    font_title = get_font(52)
-    font_sub = get_font(36)
-    font_body = get_font(30)
+    font_title = get_font(int(canvas_h * 0.042))
+    font_sub = get_font(int(canvas_h * 0.028))
+    font_body = get_font(int(canvas_h * 0.024))
 
+    # 표지 이미지 다운로드
     cover_img = None
     if cover_url and cover_url.startswith("http"):
         try:
@@ -139,68 +148,80 @@ def create_card_news_pack(book_title, author, event_info, cover_url=None):
         except Exception as e:
             logging.error(f"표지 다운로드 실패: {e}")
 
-    bg_img = get_free_stock_image("book,library,reading")
-    bg_img = bg_img.resize((canvas_w, canvas_h))
+    bg_img = get_free_stock_image("book,library,reading", canvas_w, canvas_h)
 
-    # 1장: 메인 표지 + 실사 감성 배경
+    # ===== 1장: 표지 템플릿 (텍스트 없이 깔끔한 도서 커버 강조) =====
     c1 = bg_img.copy()
-    overlay1 = Image.new("RGBA", (canvas_w, canvas_h), (0, 0, 0, 140))
+    overlay1 = Image.new("RGBA", (canvas_w, canvas_h), (15, 23, 42, 160)) # 딥 톤 오버레이
     c1 = Image.alpha_composite(c1, overlay1)
     d1 = ImageDraw.Draw(c1)
 
+    # 상/하단 디자인 템플릿 프레임 라인
+    margin = int(canvas_w * 0.06)
+    d1.rectangle([margin, margin, canvas_w-margin, canvas_h-margin], outline=(255, 255, 255, 120), width=3)
+
     if cover_img:
         img_temp = cover_img.copy()
-        img_temp.thumbnail((380, 540))
+        max_h = int(canvas_h * 0.55)
+        img_temp.thumbnail((int(canvas_w * 0.55), max_h))
         w_size, h_size = img_temp.size
         cover_x = (canvas_w - w_size) // 2
-        cover_y = 120
-        d1.rounded_rectangle([cover_x-10, cover_y-10, cover_x+w_size+10, cover_y+h_size+10], radius=12, fill=(255, 255, 255, 40))
+        cover_y = (canvas_h - h_size) // 2 - int(canvas_h * 0.04)
+        
+        # 카드 프레임 박스
+        d1.rounded_rectangle([cover_x-15, cover_y-15, cover_x+w_size+15, cover_y+h_size+15], radius=16, fill=(255, 255, 255, 40))
         c1.paste(img_temp, (cover_x, cover_y), img_temp)
-        text_y = cover_y + h_size + 70
+        text_y = cover_y + h_size + int(canvas_h * 0.05)
     else:
-        text_y = 480
+        text_y = canvas_h // 2
 
     d1.text((canvas_w / 2, text_y), f"《{book_title}》", font=font_title, fill=(255, 255, 255), anchor="mm")
-    d1.text((canvas_w / 2, text_y + 80), f"저자: {author}", font=font_sub, fill=(220, 220, 220), anchor="mm")
+    d1.text((canvas_w / 2, text_y + int(canvas_h * 0.05)), f"{author} 지음", font=font_sub, fill=(226, 232, 240), anchor="mm")
     
     p1_path = "card1.png"
     c1.convert("RGB").save(p1_path, "PNG")
     image_paths.append(p1_path)
 
-    # 2장: 홍보 핵심 내용 / 저자 이야기
+    # ===== 2장: 콘텐츠 템플릿 (본문 유광 템플릿 카드) =====
     c2 = bg_img.copy()
     overlay2 = Image.new("RGBA", (canvas_w, canvas_h), (15, 23, 42, 210))
     c2 = Image.alpha_composite(c2, overlay2)
     d2 = ImageDraw.Draw(c2)
 
-    d2.text((canvas_w / 2, 160), "BOOK HIGHLIGHT", font=font_sub, fill=(56, 189, 248), anchor="mm")
-    d2.text((canvas_w / 2, 250), f"《{book_title}》", font=font_title, fill=(255, 255, 255), anchor="mm")
+    d2.text((canvas_w / 2, int(canvas_h * 0.12)), "BOOK HIGHLIGHT", font=font_sub, fill=(56, 189, 248), anchor="mm")
+    d2.text((canvas_w / 2, int(canvas_h * 0.18)), f"《{book_title}》", font=font_title, fill=(255, 255, 255), anchor="mm")
 
-    d2.rounded_rectangle([100, 360, canvas_w-100, 820], radius=24, fill=(255, 255, 255, 25), outline=(255, 255, 255, 60), width=2)
-    d2.text((canvas_w / 2, 450), "📌 이 책의 핵심 홍보 포인트", font=font_sub, fill=(255, 255, 255), anchor="mm")
-    d2.text((canvas_w / 2, 590), event_info, font=font_body, fill=(226, 232, 240), anchor="mm")
+    # 가독성 확보용 템플릿 박스
+    box_margin = int(canvas_w * 0.08)
+    d2.rounded_rectangle([box_margin, int(canvas_h * 0.26), canvas_w-box_margin, int(canvas_h * 0.85)], radius=24, fill=(255, 255, 255, 30), outline=(255, 255, 255, 70), width=2)
+    d2.text((canvas_w / 2, int(canvas_h * 0.35)), "📌 도서 핵심 포인트", font=font_sub, fill=(255, 255, 255), anchor="mm")
+    d2.text((canvas_w / 2, int(canvas_h * 0.55)), event_info, font=font_body, fill=(226, 232, 240), anchor="mm")
 
     p2_path = "card2.png"
     c2.convert("RGB").save(p2_path, "PNG")
     image_paths.append(p2_path)
 
-    # 3장: 안내 & CTA
+    # ===== 3장: CTA 템플릿 (하단 깔끔한 레이아웃 프레임) =====
     c3 = Image.new("RGBA", (canvas_w, canvas_h), (248, 250, 252))
     d3 = ImageDraw.Draw(c3)
 
-    header_bg = bg_img.crop((0, 0, canvas_w, 450))
-    overlay3 = Image.new("RGBA", (canvas_w, 450), (0, 0, 0, 100))
+    header_h = int(canvas_h * 0.38)
+    header_bg = bg_img.crop((0, 0, canvas_w, header_h))
+    overlay3 = Image.new("RGBA", (canvas_w, header_h), (0, 0, 0, 110))
     header_bg = Image.alpha_composite(header_bg, overlay3)
     c3.paste(header_bg, (0, 0))
 
-    d3.text((canvas_w / 2, 200), f"《{book_title}》", font=font_title, fill=(255, 255, 255), anchor="mm")
-    d3.text((canvas_w / 2, 290), event_info, font=font_sub, fill=(226, 232, 240), anchor="mm")
+    d3.text((canvas_w / 2, int(header_h * 0.45)), f"《{book_title}》", font=font_title, fill=(255, 255, 255), anchor="mm")
+    d3.text((canvas_w / 2, int(header_h * 0.75)), event_info, font=font_sub, fill=(226, 232, 240), anchor="mm")
 
-    d3.rounded_rectangle([120, 520, canvas_w-120, 880], radius=30, fill=(255, 255, 255), outline=(226, 232, 240), width=2)
-    d3.text((canvas_w / 2, 620), "📖 지금 온·오프라인 서점에서 만나보세요!", font=font_sub, fill=(30, 41, 59), anchor="mm")
+    # 하단 레이아웃 박스
+    d3.rounded_rectangle([box_margin, header_h + int(canvas_h * 0.06), canvas_w-box_margin, canvas_h - int(canvas_h * 0.08)], radius=30, fill=(255, 255, 255), outline=(226, 232, 240), width=2)
+    d3.text((canvas_w / 2, header_h + int(canvas_h * 0.18)), "📖 지금 온·오프라인 서점에서 만나보세요!", font=font_sub, fill=(30, 41, 59), anchor="mm")
     
-    d3.rounded_rectangle([200, 720, canvas_w-200, 820], radius=50, fill=(14, 165, 233))
-    d3.text((canvas_w / 2, 770), "자세히 보기 & 구매하기 ➔", font=font_sub, fill=(255, 255, 255), anchor="mm")
+    # CTA 버튼
+    btn_y = canvas_h - int(canvas_h * 0.18)
+    d3.rounded_rectangle([int(canvas_w * 0.18), btn_y, canvas_w - int(canvas_w * 0.18), btn_y + int(canvas_h * 0.07)], radius=50, fill=(14, 165, 233))
+    d3.text((canvas_w / 2, btn_y + int(canvas_h * 0.035)), "자세히 보기 & 구매하기 ➔", font=font_sub, fill=(255, 255, 255), anchor="mm")
 
     p3_path = "card3.png"
     c3.convert("RGB").save(p3_path, "PNG")
@@ -209,7 +230,7 @@ def create_card_news_pack(book_title, author, event_info, cover_url=None):
     return image_paths
 
 # ----------------------------------------------------
-# 5. Gemini 홍보 목적별 맞춤 문구 생성 (권장 Chat API 적용)
+# 5. Gemini AI 맞춤 홍보 문구 생성
 # ----------------------------------------------------
 def generate_draft(book_title, author, event_info, feedback=None):
     prompt = f"""
@@ -227,30 +248,26 @@ def generate_draft(book_title, author, event_info, feedback=None):
     if feedback:
         prompt += f"\n\n[사용자 수정 요청사항]: {feedback}\n위 요구사항을 적극 반영해서 800자 이내로 재생성해줘."
 
-    # Chat API 호출 방식으로 변경하여 SDK 경고 제거
     chat = client.chats.create(model="gemini-3.5-flash-lite")
     response = chat.send_message(prompt)
     
     return response.text
 
 # ----------------------------------------------------
-# 6. 텔레그램 핸들러
+# 6. 텔레그램 대화 핸들러 (첫 이미지 캡션 제외 및 메시지 분리 전송)
 # ----------------------------------------------------
 async def send_draft_pack(chat_id, context, data, text_prompt):
-    img_paths = create_card_news_pack(data["book_title"], data["author"], data["event_info"], data["cover_url"])
+    aspect = data.get("aspect_ratio", "4:5")
+    img_paths = create_card_news_pack(data["book_title"], data["author"], data["event_info"], data["cover_url"], aspect)
 
-    caption_text = f"📌 **[도서 맞춤 홍보 초안 검토]**\n\n{text_prompt}"
-    if len(caption_text) > 1000:
-        caption_text = caption_text[:990] + "...\n(글자 수 제한으로 일부 생략)"
-
-    media = []
-    for i, p in enumerate(img_paths):
-        if i == 0:
-            media.append(InputMediaPhoto(media=open(p, "rb"), caption=caption_text, parse_mode="Markdown"))
-        else:
-            media.append(InputMediaPhoto(media=open(p, "rb")))
-
+    # 1. 첫 이미지에 텍스트 캡션을 달지 않고 3장의 순수 템플릿 카드뉴스만 앨범 전송
+    media = [InputMediaPhoto(media=open(p, "rb")) for p in img_paths]
     await context.bot.send_media_group(chat_id=chat_id, media=media)
+
+    # 2. 인스타그램 본문용 텍스트 문구는 별도 깔끔한 메시지로 분리하여 전송
+    draft_message = f"📌 **[인스타그램 본문 텍스트 초안]**\n\n{text_prompt}"
+    if len(draft_message) > 4000:
+        draft_message = draft_message[:3900] + "...\n(길이 제한으로 일부 생략)"
 
     keyboard = [
         [
@@ -259,7 +276,14 @@ async def send_draft_pack(chat_id, context, data, text_prompt):
         ]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await context.bot.send_message(chat_id=chat_id, text="👇 아래 버튼을 눌러 승인하거나 수정을 요청해 주세요.", reply_markup=reply_markup)
+
+    # 본문 문구 및 승인 버튼 함께 전송
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=draft_message,
+        parse_mode="Markdown",
+        reply_markup=reply_markup
+    )
 
 async def start_draft(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -299,7 +323,7 @@ async def receive_feedback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     feedback_text = update.message.text
 
-    await update.message.reply_text("🔄 피드백과 실사 배경을 반영하여 초안과 3장 카드뉴스를 재생성 중입니다...")
+    await update.message.reply_text("🔄 피드백과 비율 설정을 반영하여 템플릿 카드뉴스 3장을 재생성 중입니다...")
 
     data = user_drafts[chat_id]
     new_draft = generate_draft(data["book_title"], data["author"], data["event_info"], feedback=feedback_text)
