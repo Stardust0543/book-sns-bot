@@ -68,9 +68,9 @@ def get_font(size):
         return ImageFont.load_default()
 
 # ----------------------------------------------------
-# 2. Unsplash 고화질 무료 이미지 가져오기
+# 2. Unsplash 감성 이미지 가져오기
 # ----------------------------------------------------
-def get_free_stock_image(keyword="reading", width=1080, height=1350):
+def get_free_stock_image(keyword="reading,book,library", width=1080, height=1350):
     try:
         if UNSPLASH_ACCESS_KEY:
             url = f"https://api.unsplash.com/photos/random?query={keyword}&client_id={UNSPLASH_ACCESS_KEY}"
@@ -102,7 +102,6 @@ def get_pending_event_from_sheet():
         worksheet = spreadsheet.worksheet("Events")
         
         rows = worksheet.get_all_values()
-        
         if len(rows) <= 1:
             return None
 
@@ -123,11 +122,11 @@ def get_pending_event_from_sheet():
     return None
 
 # ----------------------------------------------------
-# 4. Gemini AI 풍성한 카드뉴스 시나리오 생성
+# 4. Gemini AI 감성 시나리오 생성
 # ----------------------------------------------------
 def generate_scenario_and_draft(book_title, author, event_info, feedback=None):
     prompt = f"""
-    너는 도서 전문 출판 마케터야. 아래 도서 정보와 홍보 키워드를 바탕으로 인스타그램 카드뉴스 3장에 들어갈 풍성하고 깊이 있는 내용의 시나리오 및 본문 포스팅을 작성해줘.
+    너는 인스타그램 감성 도서 마케터야. 아래 도서 정보와 요청사항을 바탕으로 독자의 가슴을 울리는 감성 카드뉴스 시나리오 및 본문 포스팅을 작성해줘. 이미지 장수는 시나리오에 맞게 3~6장으로 해줘.
 
     [도서 정보]
     - 도서명: {book_title}
@@ -138,19 +137,17 @@ def generate_scenario_and_draft(book_title, author, event_info, feedback=None):
         prompt += f"\n- [사용자 수정 요청사항]: {feedback}"
 
     prompt += """
-    반드시 아래 JSON 포맷으로만 응답해줘. 다른 설명이나 마크다운 표현 없이 순수 JSON 텍스트만 반환해.
+    반드시 아래 JSON 포맷으로만 응답해줘. 다른 설명 없이 순수 JSON 텍스트만 반환해.
 
     {
-      "card1_sub": "슬라이드1 카테고리/캐치프레이즈 (예: 한글날 기념 특별 기획)",
-      "card2_title": "슬라이드2 메인 주제 제목 (예: 우리가 몰랐던 한글의 역사)",
-      "card2_p1": "슬라이드2 핵심 포인트 1 (30자 이내)",
-      "card2_p2": "슬라이드2 핵심 포인트 2 (30자 이내)",
-      "card2_p3": "슬라이드2 핵심 포인트 3 (30자 이내)",
-      "card3_title": "슬라이드3 추천 대상 / 도서의 가치 (예: 이런 분들께 이 책을 추천합니다)",
-      "card3_r1": "추천 대상 1 (25자 이내)",
-      "card3_r2": "추천 대상 2 (25자 이내)",
-      "card3_r3": "추천 대상 3 (25자 이내)",
-      "caption": "인스타그램 본문 텍스트 (줄바꿈 및 해시태그 포함, 흥미진진한 도서 소개글 600자 이내)"
+      "card1_badge": "슬라이드1 상단 뱃지 (예: #가슴을울리는역사)",
+      "card1_sub": "슬라이드1 캐치프레이즈 (예: 역사의 거센 파도 속, 우리가 지켜낸 이름)",
+      "card2_quote": "슬라이드2 책 속 명문장 또는 핵심 질문 (40자 이내, 강렬하고 감성적인 인용구)",
+      "card2_sub": "슬라이드2 인용구 부연 설명 (35자 이내)",
+      "card3_title": "슬라이드3 메인 질문/주제 (예: 오늘, 당신이 지키고 싶은 가치는 무엇인가요?)",
+      "card3_point1": "슬라이드3 주요 포인트 1 (25자 이내)",
+      "card3_point2": "슬라이드3 주요 포인트 2 (25자 이내)",
+      "caption": "인스타그램 본문 텍스트 (감성적인 문체, 해시태그 포함 600자 이내)"
     }
     """
 
@@ -168,21 +165,19 @@ def generate_scenario_and_draft(book_title, author, event_info, feedback=None):
         data = json.loads(text)
     except Exception:
         data = {
-            "card1_sub": "특집 추천 도서",
-            "card2_title": f"《{book_title}》 핵심 이야기",
-            "card2_p1": "역사 속 숨겨진 감동적인 순간들",
-            "card2_p2": "저자가 직접 전하는 생생한 현장 기록",
-            "card2_p3": "오늘날 우리가 꼭 기억해야 할 역사적 가치",
-            "card3_title": "이런 분들께 추천합니다",
-            "card3_r1": "깊이 있는 역사를 쉽게 읽고 싶은 독자",
-            "card3_r2": "올바른 역사 의식을 키우고 싶은 청소년",
-            "card3_r3": "가슴 따뜻한 이야기를 찾는 모든 분들",
+            "card1_badge": "#오늘의추천도서",
+            "card1_sub": "역사의 순간 속에서 찾아낸 우리의 이야기",
+            "card2_quote": "“기억하지 않는 역사는 되풀이된다.”",
+            "card2_sub": "우리가 반드시 알아야 할 잊혀진 선조들의 숨결",
+            "card3_title": "이 책이 당신의 마음에 전하는 깊은 울림",
+            "card3_point1": "역사적 사실 너머의 가슴 뜨거운 감동",
+            "card3_point2": "지금 온·오프라인 서점에서 만나보세요",
             "caption": f"📖 《{book_title}》\n저자: {author}\n\n{event_info}\n\n#도서추천 #한국사 #책스타그램 #허들링북스"
         }
     return data
 
 # ----------------------------------------------------
-# 5. 카드뉴스 3장 고화질 합성
+# 5. 동적 감성 디자인 카드뉴스 3장 생성
 # ----------------------------------------------------
 def create_card_news_pack(book_title, author, scenario_data, cover_url=None, aspect_ratio="4:5"):
     image_paths = []
@@ -194,8 +189,9 @@ def create_card_news_pack(book_title, author, scenario_data, cover_url=None, asp
     else:
         canvas_w, canvas_h = 1080, 1350
 
-    font_title = get_font(int(canvas_h * 0.038))
-    font_sub = get_font(int(canvas_h * 0.025))
+    font_huge = get_font(int(canvas_h * 0.045))
+    font_title = get_font(int(canvas_h * 0.036))
+    font_sub = get_font(int(canvas_h * 0.026))
     font_body = get_font(int(canvas_h * 0.022))
 
     cover_img = None
@@ -206,109 +202,100 @@ def create_card_news_pack(book_title, author, scenario_data, cover_url=None, asp
         except Exception as e:
             logging.error(f"표지 다운로드 실패: {e}")
 
-    bg_img = get_free_stock_image("book,library,history", canvas_w, canvas_h)
+    bg_img = get_free_stock_image("book,library,history,emotional", canvas_w, canvas_h)
 
-    # ===== 1장: 메인 표지 카드뉴스 =====
+    # ===== 1장: 대형 포커스 표지 + 그라데이션 후광 템플릿 =====
     c1 = bg_img.copy()
-    overlay1 = Image.new("RGBA", (canvas_w, canvas_h), (15, 23, 42, 170))
+    overlay1 = Image.new("RGBA", (canvas_w, canvas_h), (10, 15, 30, 180))
     c1 = Image.alpha_composite(c1, overlay1)
     d1 = ImageDraw.Draw(c1)
 
-    margin = int(canvas_w * 0.06)
-    d1.rectangle([margin, margin, canvas_w-margin, canvas_h-margin], outline=(255, 255, 255, 100), width=2)
-
-    d1.text((canvas_w / 2, int(canvas_h * 0.12)), scenario_data.get("card1_sub", "FEATURED BOOK"), font=font_sub, fill=(56, 189, 248), anchor="mm")
+    # 상단 감성 뱃지
+    d1.text((canvas_w / 2, int(canvas_h * 0.10)), scenario_data.get("card1_badge", "#FEATURED_BOOK"), font=font_sub, fill=(56, 189, 248), anchor="mm")
 
     if cover_img:
         img_temp = cover_img.copy()
-        max_h = int(canvas_h * 0.50)
+        max_h = int(canvas_h * 0.48)
         img_temp.thumbnail((int(canvas_w * 0.55), max_h))
         w_size, h_size = img_temp.size
         cover_x = (canvas_w - w_size) // 2
-        cover_y = int(canvas_h * 0.18)
+        cover_y = int(canvas_h * 0.16)
         
-        d1.rounded_rectangle([cover_x-12, cover_y-12, cover_x+w_size+12, cover_y+h_size+12], radius=16, fill=(255, 255, 255, 40))
+        # 은은한 글로우 후광 박스
+        d1.rounded_rectangle([cover_x-16, cover_y-16, cover_x+w_size+16, cover_y+h_size+16], radius=20, fill=(255, 255, 255, 30))
         c1.paste(img_temp, (cover_x, cover_y), img_temp)
         text_y = cover_y + h_size + int(canvas_h * 0.06)
     else:
         text_y = canvas_h // 2
 
-    d1.text((canvas_w / 2, text_y), f"《{book_title}》", font=font_title, fill=(255, 255, 255), anchor="mm")
-    d1.text((canvas_w / 2, text_y + int(canvas_h * 0.05)), f"{author} 지음", font=font_sub, fill=(203, 213, 225), anchor="mm")
+    # 캐치프레이즈 및 타이틀
+    sub_text = scenario_data.get("card1_sub", "")
+    d1.text((canvas_w / 2, text_y), sub_text, font=font_body, fill=(203, 213, 225), anchor="mm")
+    d1.text((canvas_w / 2, text_y + int(canvas_h * 0.05)), f"《{book_title}》", font=font_huge, fill=(255, 255, 255), anchor="mm")
+    d1.text((canvas_w / 2, text_y + int(canvas_h * 0.11)), f"{author} 지음", font=font_sub, fill=(148, 163, 184), anchor="mm")
     
     p1_path = "card1.png"
     c1.convert("RGB").save(p1_path, "PNG")
     image_paths.append(p1_path)
 
-    # ===== 2장: 스토리 카드뉴스 =====
+    # ===== 2장: 책 속 명문장/질문 인용 템플릿 (인용구 타이포그래피) =====
     c2 = bg_img.copy()
-    overlay2 = Image.new("RGBA", (canvas_w, canvas_h), (15, 23, 42, 220))
+    overlay2 = Image.new("RGBA", (canvas_w, canvas_h), (15, 23, 42, 230))
     c2 = Image.alpha_composite(c2, overlay2)
     d2 = ImageDraw.Draw(c2)
 
-    d2.text((canvas_w / 2, int(canvas_h * 0.10)), "INSIGHT STORY", font=font_sub, fill=(56, 189, 248), anchor="mm")
-    d2.text((canvas_w / 2, int(canvas_h * 0.16)), scenario_data.get("card2_title", "핵심 스토리"), font=font_title, fill=(255, 255, 255), anchor="mm")
+    # 대형 큰따옴표 장식
+    font_quote = get_font(int(canvas_h * 0.12))
+    d2.text((canvas_w / 2, int(canvas_h * 0.22)), "“", font=font_quote, fill=(56, 189, 248, 120), anchor="mm")
 
-    box_margin = int(canvas_w * 0.08)
-    d2.rounded_rectangle([box_margin, int(canvas_h * 0.24), canvas_w-box_margin, int(canvas_h * 0.88)], radius=24, fill=(30, 41, 59, 230), outline=(71, 85, 105), width=2)
+    quote_text = scenario_data.get("card2_quote", "")
+    q_lines = textwrap.wrap(quote_text, width=16)
     
-    points = [
-        scenario_data.get("card2_p1", ""),
-        scenario_data.get("card2_p2", ""),
-        scenario_data.get("card2_p3", "")
-    ]
-    
-    start_y = int(canvas_h * 0.32)
-    gap_y = int(canvas_h * 0.18)
-    
-    for idx, p in enumerate(points):
-        if not p: continue
-        curr_y = start_y + (idx * gap_y)
-        d2.rounded_rectangle([box_margin + 30, curr_y, canvas_w - box_margin - 30, curr_y + int(canvas_h * 0.12)], radius=12, fill=(51, 65, 85))
-        
-        p_lines = textwrap.wrap(p, width=22)
-        for line_idx, l in enumerate(p_lines[:2]):
-            d2.text((canvas_w / 2, curr_y + int(canvas_h * 0.04) + (line_idx * 35)), l, font=font_body, fill=(241, 245, 249), anchor="mm")
+    start_y = int(canvas_h * 0.38)
+    for idx, l in enumerate(q_lines):
+        d2.text((canvas_w / 2, start_y + (idx * int(canvas_h * 0.06))), l, font=font_huge, fill=(255, 255, 255), anchor="mm")
+
+    sub_q = scenario_data.get("card2_sub", "")
+    d2.text((canvas_w / 2, start_y + (len(q_lines) * int(canvas_h * 0.06)) + int(canvas_h * 0.08)), sub_q, font=font_sub, fill=(148, 163, 184), anchor="mm")
 
     p2_path = "card2.png"
     c2.convert("RGB").save(p2_path, "PNG")
     image_paths.append(p2_path)
 
-    # ===== 3장: 추천 대상 카드뉴스 =====
+    # ===== 3장: 비대칭 감성 레이아웃 & 추천 인사이트 템플릿 =====
     c3 = Image.new("RGBA", (canvas_w, canvas_h), (248, 250, 252))
     d3 = ImageDraw.Draw(c3)
 
-    header_h = int(canvas_h * 0.32)
+    # 상단 스톡 비주얼 헤더
+    header_h = int(canvas_h * 0.40)
     header_bg = bg_img.crop((0, 0, canvas_w, header_h))
-    overlay3 = Image.new("RGBA", (canvas_w, header_h), (0, 0, 0, 140))
+    overlay3 = Image.new("RGBA", (canvas_w, header_h), (15, 23, 42, 140))
     header_bg = Image.alpha_composite(header_bg, overlay3)
     c3.paste(header_bg, (0, 0))
 
-    d3.text((canvas_w / 2, int(header_h * 0.35)), "RECOMMENDATION", font=font_sub, fill=(56, 189, 248), anchor="mm")
-    d3.text((canvas_w / 2, int(header_h * 0.70)), f"《{book_title}》", font=font_title, fill=(255, 255, 255), anchor="mm")
-
-    d3.rounded_rectangle([box_margin, header_h + int(canvas_h * 0.04), canvas_w-box_margin, canvas_h - int(canvas_h * 0.06)], radius=28, fill=(255, 255, 255), outline=(226, 232, 240), width=2)
+    d3.text((canvas_w / 2, int(header_h * 0.35)), "BOOK INSIGHT", font=font_sub, fill=(56, 189, 248), anchor="mm")
     
-    rec_title = scenario_data.get("card3_title", "이런 분들께 이 책을 추천합니다")
-    d3.text((canvas_w / 2, header_h + int(canvas_h * 0.12)), rec_title, font=font_sub, fill=(30, 41, 59), anchor="mm")
+    title_3 = scenario_data.get("card3_title", f"《{book_title}》")
+    t3_lines = textwrap.wrap(title_3, width=16)
+    for idx, l in enumerate(t3_lines[:2]):
+        d3.text((canvas_w / 2, int(header_h * 0.60) + (idx * int(canvas_h * 0.05))), l, font=font_title, fill=(255, 255, 255), anchor="mm")
 
-    recommends = [
-        scenario_data.get("card3_r1", ""),
-        scenario_data.get("card3_r2", ""),
-        scenario_data.get("card3_r3", "")
-    ]
-
-    rec_start_y = header_h + int(canvas_h * 0.22)
-    rec_gap = int(canvas_h * 0.12)
+    # 하단 2개 핵심 포인트 카드 (비대칭 카드 스타일)
+    box_m = int(canvas_w * 0.08)
+    card_y1 = header_h + int(canvas_h * 0.06)
     
-    for idx, r in enumerate(recommends):
-        if not r: continue
-        curr_y = rec_start_y + (idx * rec_gap)
-        d3.rounded_rectangle([box_margin + 30, curr_y, canvas_w - box_margin - 30, curr_y + int(canvas_h * 0.09)], radius=12, fill=(241, 245, 249))
-        
-        r_lines = textwrap.wrap(r, width=22)
-        for line_idx, l in enumerate(r_lines[:2]):
-            d3.text((canvas_w / 2, curr_y + int(canvas_h * 0.045) + (line_idx * 30)), l, font=font_body, fill=(51, 65, 85), anchor="mm")
+    p1 = scenario_data.get("card3_point1", "")
+    if p1:
+        d3.rounded_rectangle([box_m, card_y1, canvas_w - box_m, card_y1 + int(canvas_h * 0.16)], radius=20, fill=(255, 255, 255), outline=(226, 232, 240), width=2)
+        d3.text((box_m + 40, card_y1 + 35), "POINT 01", font=font_body, fill=(14, 165, 233))
+        d3.text((box_m + 40, card_y1 + 85), p1, font=font_sub, fill=(30, 41, 59))
+
+    p2 = scenario_data.get("card3_point2", "")
+    card_y2 = card_y1 + int(canvas_h * 0.20)
+    if p2:
+        d3.rounded_rectangle([box_m, card_y2, canvas_w - box_m, card_y2 + int(canvas_h * 0.16)], radius=20, fill=(255, 255, 255), outline=(226, 232, 240), width=2)
+        d3.text((box_m + 40, card_y2 + 35), "POINT 02", font=font_body, fill=(14, 165, 233))
+        d3.text((box_m + 40, card_y2 + 85), p2, font=font_sub, fill=(30, 41, 59))
 
     p3_path = "card3.png"
     c3.convert("RGB").save(p3_path, "PNG")
@@ -384,7 +371,7 @@ async def receive_feedback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     feedback_text = update.message.text
 
-    await update.message.reply_text("🔄 피드백을 반영하여 초안과 3장 카드뉴스를 재생성 중입니다...")
+    await update.message.reply_text("🔄 피드백을 반영하여 감성 카드뉴스 시나리오와 3장 이미지를 재생성 중입니다...")
 
     data = user_drafts[chat_id]
     new_scenario = generate_scenario_and_draft(data["book_title"], data["author"], data["event_info"], feedback=feedback_text)
