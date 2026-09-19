@@ -1,6 +1,7 @@
-python-telegram-bot
-google-genai
-gspread
-pillow
-requests
 flask
+requests
+gspread
+google-genai
+python-telegram-bot
+Pillow
+html2image
