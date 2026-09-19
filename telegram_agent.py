@@ -81,39 +81,48 @@ def get_pending_event_from_sheet():
     return None
 
 # ----------------------------------------------------
-# 3. Pillow 카드뉴스 이미지 합성 함수
+# 3. Pillow 카드뉴스 이미지 합성 함수 (가독성/폰트크기 개선)
 # ----------------------------------------------------
 def create_card_news(book_title, event_info, cover_url=None, output_path="cardnews.png"):
     canvas_w, canvas_h = 1080, 1080
-    canvas = Image.new("RGBA", (canvas_w, canvas_h), (250, 252, 255))
+    canvas = Image.new("RGBA", (canvas_w, canvas_h), (245, 247, 250))
     draw = ImageDraw.Draw(canvas)
 
-    cover_y = 120
-    h_size = 400
+    cover_y = 100
+    h_size = 480
     if cover_url and cover_url.startswith("http"):
         try:
             res = requests.get(cover_url, timeout=5)
             cover_img = Image.open(BytesIO(res.content)).convert("RGBA")
-            cover_img.thumbnail((380, 500))
+            cover_img.thumbnail((420, 580))
             w_size, h_size = cover_img.size
             cover_x = (canvas_w - w_size) // 2
             
-            draw.rounded_rectangle([cover_x+10, cover_y+10, cover_x+w_size+10, cover_y+h_size+10], radius=12, fill=(220, 225, 230))
+            # 카드 그림자 효과
+            draw.rounded_rectangle([cover_x+12, cover_y+12, cover_x+w_size+12, cover_y+h_size+12], radius=16, fill=(210, 215, 222))
             canvas.paste(cover_img, (cover_x, cover_y))
         except Exception as e:
             logging.error(f"표지 이미지 로드 실패: {e}")
 
-    font = ImageFont.load_default()
-    text_start_y = cover_y + h_size + 60
-    draw.text((canvas_w / 2, text_start_y), f"《{book_title}》", font=font, fill=(30, 30, 30), anchor="mm")
-    draw.text((canvas_w / 2, text_start_y + 80), event_info, font=font, fill=(70, 70, 70), anchor="mm")
+    # 기본 폰트 크기 확대 지정
+    try:
+        title_font = ImageFont.load_default(size=48)
+        info_font = ImageFont.load_default(size=36)
+    except TypeError:
+        title_font = ImageFont.load_default()
+        info_font = ImageFont.load_default()
+
+    text_start_y = cover_y + h_size + 80
+    
+    draw.text((canvas_w / 2, text_start_y), f"《{book_title}》", font=title_font, fill=(20, 20, 20), anchor="mm")
+    draw.text((canvas_w / 2, text_start_y + 90), event_info, font=info_font, fill=(60, 60, 60), anchor="mm")
 
     final_img = canvas.convert("RGB")
     final_img.save(output_path, "PNG")
     return output_path
 
 # ----------------------------------------------------
-# 4. Gemini 문구 생성 (글자 수 제약 추가)
+# 4. Gemini 문구 생성 (800자 이하 제한)
 # ----------------------------------------------------
 def generate_draft(book_title, author, event_info, feedback=None):
     prompt = f"""
@@ -134,7 +143,7 @@ def generate_draft(book_title, author, event_info, feedback=None):
     return response.text
 
 # ----------------------------------------------------
-# 5. 텔레그램 대화 핸들러 (캡션 안전 자르기 적용)
+# 5. 텔레그램 대화 핸들러
 # ----------------------------------------------------
 async def start_draft(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -159,7 +168,7 @@ async def start_draft(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    # 캡션 길이가 텔레그램 이미지 캡션 제한(1024자)을 넘지 않도록 안전 자르기
+    # 캡션 길이 제한(1,024자 제한) 안전 처리
     caption_text = f"📌 **[도서 포스팅 초안 검토 요청]**\n\n{draft_text}"
     if len(caption_text) > 1000:
         caption_text = caption_text[:990] + "...\n(글자 수 제한으로 일부 생략)"
@@ -185,7 +194,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ws = user_drafts[chat_id]["worksheet"]
             ws.update_cell(row_idx, 5, "Done")
 
-        # 캡션 자르기 안전 적용
         base_caption = query.message.caption or ""
         approved_caption = f"{base_caption}\n\n✅ **[승인 완료]** 포스팅이 승인되었으며 시트 상태가 'Done'으로 변경되었습니다!"
         if len(approved_caption) > 1024:
