@@ -31,29 +31,41 @@ WAITING_FOR_FEEDBACK = 1
 user_drafts = {}
 
 # ----------------------------------------------------
-# 2. 구글 시트 연동 함수
+# 2. 구글 시트 연동 함수 (안정화 적용)
 # ----------------------------------------------------
 def get_pending_event_from_sheet():
     """구글 시트에서 Status가 Pending인 첫 번째 이벤트를 읽어옵니다."""
     try:
+        if not GOOGLE_SERVICE_ACCOUNT_JSON:
+            logging.error("GOOGLE_SERVICE_ACCOUNT_JSON 환경변수가 설정되지 않았습니다.")
+            return None
+
         creds_dict = json.loads(GOOGLE_SERVICE_ACCOUNT_JSON)
         gc = gspread.service_account_from_dict(creds_dict)
         spreadsheet = gc.open("도서_이벤트_마스터")
         worksheet = spreadsheet.worksheet("Events")
         
-        records = worksheet.get_all_records()
-        for idx, row in enumerate(records, start=2):
-            if str(row.get("Status", "")).strip() == "Pending":
+        # get_all_values()를 사용하여 모든 행을 리스트로 읽음
+        rows = worksheet.get_all_values()
+        
+        if len(rows) <= 1:
+            logging.info("시트에 데이터 행이 존재하지 않습니다.")
+            return None
+
+        # 2행(index 1)부터 데이터 검사
+        for idx, row in enumerate(rows[1:], start=2):
+            status = row[4].strip() if len(row) > 4 else ""
+            if status == "Pending":
                 return {
                     "row_index": idx,
-                    "book_title": row.get("BookTitle", "도서명 미정"),
-                    "author": row.get("Author", "저자 미정"),
-                    "event_info": row.get("EventSummary", "이벤트 내용 없음"),
-                    "cover_url": row.get("CoverUrl", ""),
+                    "book_title": row[0] if len(row) > 0 else "도서명 미정",
+                    "author": row[1] if len(row) > 1 else "저자 미정",
+                    "event_info": row[2] if len(row) > 2 else "이벤트 내용 없음",
+                    "cover_url": row[3] if len(row) > 3 else "",
                     "worksheet": worksheet
                 }
     except Exception as e:
-        logging.error(f"구글 시트 연동 오류: {e}")
+        logging.error(f"구글 시트 연동 에러 발생: {e}")
     return None
 
 # ----------------------------------------------------
