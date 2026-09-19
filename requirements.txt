@@ -3,3 +3,4 @@ google-genai
 gspread
 pillow
 requests
+flask
