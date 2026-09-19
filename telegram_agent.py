@@ -1,9 +1,11 @@
 import os
 import json
 import logging
+import threading
 import requests
 from io import BytesIO
 from PIL import Image, ImageDraw, ImageFont
+from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -16,6 +18,19 @@ from telegram.ext import (
 )
 import gspread
 from google import genai
+
+# ----------------------------------------------------
+# 0. Render 포트 스캔 대응용 미니 웹서버 (배포 속도 단축)
+# ----------------------------------------------------
+web_app = Flask(__name__)
+
+@web_app.route('/')
+def health_check():
+    return "Telegram Bot Agent is Running!", 200
+
+def run_flask():
+    port = int(os.environ.get("PORT", 10000))
+    web_app.run(host="0.0.0.0", port=port)
 
 # ----------------------------------------------------
 # 1. 환경 변수 설정
@@ -31,10 +46,9 @@ WAITING_FOR_FEEDBACK = 1
 user_drafts = {}
 
 # ----------------------------------------------------
-# 2. 구글 시트 연동 함수 (안정화 적용)
+# 2. 구글 시트 연동 함수
 # ----------------------------------------------------
 def get_pending_event_from_sheet():
-    """구글 시트에서 Status가 Pending인 첫 번째 이벤트를 읽어옵니다."""
     try:
         if not GOOGLE_SERVICE_ACCOUNT_JSON:
             logging.error("GOOGLE_SERVICE_ACCOUNT_JSON 환경변수가 설정되지 않았습니다.")
@@ -45,14 +59,12 @@ def get_pending_event_from_sheet():
         spreadsheet = gc.open("도서_이벤트_마스터")
         worksheet = spreadsheet.worksheet("Events")
         
-        # get_all_values()를 사용하여 모든 행을 리스트로 읽음
         rows = worksheet.get_all_values()
         
         if len(rows) <= 1:
             logging.info("시트에 데이터 행이 존재하지 않습니다.")
             return None
 
-        # 2행(index 1)부터 데이터 검사
         for idx, row in enumerate(rows[1:], start=2):
             status = row[4].strip() if len(row) > 4 else ""
             if status == "Pending":
@@ -76,7 +88,6 @@ def create_card_news(book_title, event_info, cover_url=None, output_path="cardne
     canvas = Image.new("RGBA", (canvas_w, canvas_h), (250, 252, 255))
     draw = ImageDraw.Draw(canvas)
 
-    # 표지 다운로드 및 배치
     cover_y = 120
     h_size = 400
     if cover_url and cover_url.startswith("http"):
@@ -87,13 +98,11 @@ def create_card_news(book_title, event_info, cover_url=None, output_path="cardne
             w_size, h_size = cover_img.size
             cover_x = (canvas_w - w_size) // 2
             
-            # 그림자 효과
             draw.rounded_rectangle([cover_x+10, cover_y+10, cover_x+w_size+10, cover_y+h_size+10], radius=12, fill=(220, 225, 230))
             canvas.paste(cover_img, (cover_x, cover_y))
         except Exception as e:
             logging.error(f"표지 이미지 로드 실패: {e}")
 
-    # 텍스트 배치
     font = ImageFont.load_default()
     text_start_y = cover_y + h_size + 60
     draw.text((canvas_w / 2, text_start_y), f"《{book_title}》", font=font, fill=(30, 30, 30), anchor="mm")
@@ -128,7 +137,6 @@ def generate_draft(book_title, author, event_info, feedback=None):
 async def start_draft(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     
-    # 구글 시트에서 Pending 데이터 조회
     event_data = get_pending_event_from_sheet()
     if not event_data:
         await context.bot.send_message(chat_id=chat_id, text="📌 현재 처리할 [Pending] 상태의 도서 이벤트가 없습니다.")
@@ -136,7 +144,6 @@ async def start_draft(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user_drafts[chat_id] = event_data
     
-    # AI 문구 생성 및 카드뉴스 제작
     draft_text = generate_draft(event_data["book_title"], event_data["author"], event_data["event_info"])
     user_drafts[chat_id]["current_text"] = draft_text
     
@@ -150,7 +157,6 @@ async def start_draft(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    # 이미지와 문구를 함께 전송
     with open(img_path, "rb") as photo:
         await context.bot.send_photo(
             chat_id=chat_id,
@@ -167,7 +173,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = query.message.chat_id
 
     if query.data == "approve":
-        # 승인 시 구글 시트 Status를 Done으로 변경
         if chat_id in user_drafts and "worksheet" in user_drafts[chat_id]:
             row_idx = user_drafts[chat_id]["row_index"]
             ws = user_drafts[chat_id]["worksheet"]
@@ -215,6 +220,9 @@ async def receive_feedback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 def main():
+    # 백그라운드 웹서버 쓰레드 실행 (Render 배포 통과용)
+    threading.Thread(target=run_flask, daemon=True).start()
+
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     conv_handler = ConversationHandler(
         entry_points=[
