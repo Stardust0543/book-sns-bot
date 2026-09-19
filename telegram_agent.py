@@ -47,7 +47,6 @@ UNSPLASH_ACCESS_KEY = os.environ.get("UNSPLASH_ACCESS_KEY")
 client = genai.Client(api_key=GEMINI_API_KEY)
 logging.basicConfig(level=logging.INFO)
 
-# 대화 상태 정의
 WAITING_SCENARIO_ACTION = 1
 WAITING_SCENARIO_FEEDBACK = 2
 WAITING_FINAL_APPROVAL = 3
@@ -62,9 +61,7 @@ def get_font(size):
             res = requests.get(font_url, timeout=10)
             with open(FONT_PATH, "wb") as f:
                 f.write(res.content)
-            logging.info("한글 폰트(NanumGothic) 다운로드 완료")
-        except Exception as e:
-            logging.error(f"폰트 다운로드 실패: {e}")
+        except Exception:
             return ImageFont.load_default()
     try:
         return ImageFont.truetype(FONT_PATH, size)
@@ -72,9 +69,9 @@ def get_font(size):
         return ImageFont.load_default()
 
 # ----------------------------------------------------
-# 2. Unsplash 감성 스톡 이미지 가져오기
+# 2. Unsplash 스톡 이미지 가져오기
 # ----------------------------------------------------
-def get_free_stock_image(keyword="history,reading,book", width=1080, height=1350):
+def get_free_stock_image(keyword="history,book,library", width=1080, height=1350):
     try:
         if UNSPLASH_ACCESS_KEY:
             url = f"https://api.unsplash.com/photos/random?query={keyword}&client_id={UNSPLASH_ACCESS_KEY}"
@@ -84,8 +81,8 @@ def get_free_stock_image(keyword="history,reading,book", width=1080, height=1350
                 img_res = requests.get(img_url, timeout=5)
                 img = Image.open(BytesIO(img_res.content)).convert("RGBA")
                 return img.resize((width, height))
-    except Exception as e:
-        logging.error(f"Unsplash 이미지 로드 실패: {e}")
+    except Exception:
+        pass
 
     fallback_url = f"https://picsum.photos/{width}/{height}"
     res = requests.get(fallback_url, timeout=5)
@@ -97,7 +94,6 @@ def get_free_stock_image(keyword="history,reading,book", width=1080, height=1350
 def get_pending_event_from_sheet():
     try:
         if not GOOGLE_SERVICE_ACCOUNT_JSON:
-            logging.error("GOOGLE_SERVICE_ACCOUNT_JSON 환경변수가 설정되지 않았습니다.")
             return None
 
         creds_dict = json.loads(GOOGLE_SERVICE_ACCOUNT_JSON)
@@ -122,11 +118,11 @@ def get_pending_event_from_sheet():
                     "worksheet": worksheet
                 }
     except Exception as e:
-        logging.error(f"구글 시트 연동 에러 발생: {e}")
+        logging.error(f"구글 시트 연동 에러: {e}")
     return None
 
 # ----------------------------------------------------
-# 4. Gemini AI 가변 슬라이드(1~6장) 시나리오 기획
+# 4. Gemini AI 시나리오 기획
 # ----------------------------------------------------
 def generate_pro_scenario(book_title, author, event_info, feedback=None):
     prompt = f"""
@@ -142,10 +138,6 @@ def generate_pro_scenario(book_title, author, event_info, feedback=None):
         prompt += f"\n- [사용자 피드백 반영 요청]: {feedback}"
 
     prompt += """
-    [슬라이드 구성 규칙]:
-    1. 슬라이드 수(slide_count)는 내용에 따라 1장부터 6장 사이로 자유롭게 결정해줘.
-    2. type은 'cover', 'quote', 'background', 'detail', 'cta' 중 하나로 지정할 것.
-
     반드시 아래 JSON 포맷으로만 응답해줘. 다른 설명 없이 순수 JSON 텍스트만 반환해.
 
     {
@@ -195,8 +187,7 @@ def generate_pro_scenario(book_title, author, event_info, feedback=None):
 
     try:
         data = json.loads(text)
-    except Exception as e:
-        logging.error(f"JSON 파싱 에러: {e}")
+    except Exception:
         data = {
             "intent": "역사적 수난 속에서 우리말과 글을 지켜낸 선조들의 노력 부각",
             "target": "한글날의 의미를 새기고 싶은 독자",
@@ -233,7 +224,7 @@ def generate_pro_scenario(book_title, author, event_info, feedback=None):
     return data
 
 # ----------------------------------------------------
-# 5. 가변 슬라이드(1~6장) 감성 카드뉴스 합성
+# 5. 상단 영문 문구가 완전 제거된 카드뉴스 합성 함수
 # ----------------------------------------------------
 def create_card_news_from_scenario(book_title, author, scenario_data, cover_url=None, aspect_ratio="4:5"):
     image_paths = []
@@ -246,40 +237,38 @@ def create_card_news_from_scenario(book_title, author, scenario_data, cover_url=
     else:
         canvas_w, canvas_h = 1080, 1350
 
-    font_huge = get_font(int(canvas_h * 0.042))
-    font_title = get_font(int(canvas_h * 0.034))
-    font_sub = get_font(int(canvas_h * 0.025))
-    font_body = get_font(int(canvas_h * 0.022))
+    font_huge = get_font(int(canvas_h * 0.046))
+    font_title = get_font(int(canvas_h * 0.038))
+    font_sub = get_font(int(canvas_h * 0.026))
+    font_body = get_font(int(canvas_h * 0.023))
 
     cover_img = None
     if cover_url and cover_url.startswith("http"):
         try:
             res = requests.get(cover_url, timeout=5)
             cover_img = Image.open(BytesIO(res.content)).convert("RGBA")
-        except Exception as e:
-            logging.error(f"표지 다운로드 실패: {e}")
+        except Exception:
+            pass
 
-    bg_img = get_free_stock_image("history,book,library,monument", canvas_w, canvas_h)
+    bg_img = get_free_stock_image("history,book,library", canvas_w, canvas_h)
 
     for idx, slide in enumerate(slides, start=1):
         s_type = slide.get("type", "detail")
         c = bg_img.copy()
         
-        # 1) 표지 슬라이드 (cover)
+        # 1) 표지 슬라이드
         if s_type == "cover" or idx == 1:
-            overlay = Image.new("RGBA", (canvas_w, canvas_h), (10, 15, 30, 180))
+            overlay = Image.new("RGBA", (canvas_w, canvas_h), (10, 15, 30, 185))
             c = Image.alpha_composite(c, overlay)
             d = ImageDraw.Draw(c)
 
-            d.text((canvas_w / 2, int(canvas_h * 0.09)), f"#도서추천", font=font_sub, fill=(56, 189, 248), anchor="mm")
-
             if cover_img:
                 img_temp = cover_img.copy()
-                max_h = int(canvas_h * 0.45)
-                img_temp.thumbnail((int(canvas_w * 0.55), max_h))
+                max_h = int(canvas_h * 0.48)
+                img_temp.thumbnail((int(canvas_w * 0.58), max_h))
                 w_size, h_size = img_temp.size
                 cover_x = (canvas_w - w_size) // 2
-                cover_y = int(canvas_h * 0.15)
+                cover_y = int(canvas_h * 0.12)
                 
                 d.rounded_rectangle([cover_x-14, cover_y-14, cover_x+w_size+14, cover_y+h_size+14], radius=18, fill=(255, 255, 255, 30))
                 c.paste(img_temp, (cover_x, cover_y), img_temp)
@@ -300,18 +289,18 @@ def create_card_news_from_scenario(book_title, author, scenario_data, cover_url=
 
             d.text((canvas_w / 2, canvas_h - int(canvas_h * 0.06)), f"《{book_title}》 {author} 저", font=font_body, fill=(148, 163, 184), anchor="mm")
 
-        # 2) 명문장 인용구 슬라이드 (quote)
+        # 2) 명문장 인용구 슬라이드
         elif s_type == "quote":
             overlay = Image.new("RGBA", (canvas_w, canvas_h), (15, 23, 42, 230))
             c = Image.alpha_composite(c, overlay)
             d = ImageDraw.Draw(c)
 
-            font_q = get_font(int(canvas_h * 0.12))
-            d.text((canvas_w / 2, int(canvas_h * 0.20)), "“", font=font_q, fill=(56, 189, 248, 120), anchor="mm")
+            font_q = get_font(int(canvas_h * 0.14))
+            d.text((canvas_w / 2, int(canvas_h * 0.18)), "“", font=font_q, fill=(56, 189, 248, 140), anchor="mm")
 
             head = slide.get("head_copy", "")
             h_lines = textwrap.wrap(head, width=16)
-            start_y = int(canvas_h * 0.35)
+            start_y = int(canvas_h * 0.32)
             for i, l in enumerate(h_lines):
                 d.text((canvas_w / 2, start_y + (i * int(canvas_h * 0.06))), l, font=font_huge, fill=(255, 255, 255), anchor="mm")
 
@@ -321,7 +310,7 @@ def create_card_news_from_scenario(book_title, author, scenario_data, cover_url=
             for i, l in enumerate(b_lines[:3]):
                 d.text((canvas_w / 2, b_start_y + (i * int(canvas_h * 0.04))), l, font=font_sub, fill=(148, 163, 184), anchor="mm")
 
-        # 3) 마무리 CTA 슬라이드 (cta)
+        # 3) 마무리 CTA 슬라이드
         elif s_type == "cta" or idx == len(slides):
             c = Image.new("RGBA", (canvas_w, canvas_h), (248, 250, 252))
             d = ImageDraw.Draw(c)
@@ -332,12 +321,10 @@ def create_card_news_from_scenario(book_title, author, scenario_data, cover_url=
             header_bg = Image.alpha_composite(header_bg, overlay_h)
             c.paste(header_bg, (0, 0))
 
-            d.text((canvas_w / 2, int(header_h * 0.35)), "SPECIAL RECOMMENDATION", font=font_sub, fill=(56, 189, 248), anchor="mm")
-            
             head = slide.get("head_copy", "")
             h_lines = textwrap.wrap(head, width=16)
             for i, l in enumerate(h_lines[:2]):
-                d.text((canvas_w / 2, int(header_h * 0.60) + (i * int(canvas_h * 0.05))), l, font=font_title, fill=(255, 255, 255), anchor="mm")
+                d.text((canvas_w / 2, int(header_h * 0.50) + (i * int(canvas_h * 0.05))), l, font=font_title, fill=(255, 255, 255), anchor="mm")
 
             box_m = int(canvas_w * 0.08)
             card_y = header_h + int(canvas_h * 0.06)
@@ -348,26 +335,24 @@ def create_card_news_from_scenario(book_title, author, scenario_data, cover_url=
             sub = slide.get("sub_copy", slide.get("body", ""))
             s_lines = textwrap.wrap(sub, width=20)
             for i, l in enumerate(s_lines[:4]):
-                d.text((canvas_w / 2, card_y + int(card_h * 0.25) + (i * int(canvas_h * 0.045))), l, font=font_sub, fill=(30, 41, 59), anchor="mm")
+                d.text((canvas_w / 2, card_y + int(card_h * 0.30) + (i * int(canvas_h * 0.045))), l, font=font_sub, fill=(30, 41, 59), anchor="mm")
 
             d.text((canvas_w / 2, card_y + card_h - int(canvas_h * 0.10)), "전국 온·오프라인 서점에서 만나보실 수 있습니다.", font=font_body, fill=(100, 116, 139), anchor="mm")
 
-        # 4) 일반 스토리/상세 슬라이드 (background / detail)
+        # 4) 일반 스토리 슬라이드
         else:
             overlay = Image.new("RGBA", (canvas_w, canvas_h), (15, 23, 42, 225))
             c = Image.alpha_composite(c, overlay)
             d = ImageDraw.Draw(c)
 
-            d.text((canvas_w / 2, int(canvas_h * 0.12)), f"SLIDE 0{idx}", font=font_sub, fill=(56, 189, 248), anchor="mm")
-
             head = slide.get("head_copy", "")
             h_lines = textwrap.wrap(head, width=16)
             for i, l in enumerate(h_lines[:2]):
-                d.text((canvas_w / 2, int(canvas_h * 0.22) + (i * int(canvas_h * 0.05))), l, font=font_huge, fill=(255, 255, 255), anchor="mm")
+                d.text((canvas_w / 2, int(canvas_h * 0.16) + (i * int(canvas_h * 0.05))), l, font=font_huge, fill=(255, 255, 255), anchor="mm")
 
             box_m = int(canvas_w * 0.08)
-            box_y = int(canvas_h * 0.38)
-            box_h = int(canvas_h * 0.48)
+            box_y = int(canvas_h * 0.32)
+            box_h = int(canvas_h * 0.54)
             d.rounded_rectangle([box_m, box_y, canvas_w - box_m, box_y + box_h], radius=24, fill=(30, 41, 59, 230), outline=(71, 85, 105), width=2)
 
             body = slide.get("body", "")
@@ -385,7 +370,7 @@ def create_card_news_from_scenario(book_title, author, scenario_data, cover_url=
     return image_paths
 
 # ----------------------------------------------------
-# 6. 텔레그램 대화 핸들러 (2단계 검토)
+# 6. 텔레그램 대화 핸들러
 # ----------------------------------------------------
 async def start_draft(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -402,11 +387,10 @@ async def start_draft(update: Update, context: ContextTypes.DEFAULT_TYPE):
     scenario_data = generate_pro_scenario(event_data["book_title"], event_data["author"], event_data["event_info"])
     user_drafts[chat_id]["scenario"] = scenario_data
 
-    # 시나리오 브리핑 전송
     slides_info = ""
     for s in scenario_data.get("slides", []):
         content = s.get('head_copy', '')
-        slides_info += f"• **Slide {s.get('slide_num')} ({s.get('type')})**: {content}\n"
+        slides_info += f"• **Slide {s.get('slide_num')}**: {content}\n"
 
     scenario_msg = f"""
 📱 **도서 맞춤 SNS 홍보 포스팅 시나리오**
@@ -481,7 +465,7 @@ async def receive_scenario_feedback(update: Update, context: ContextTypes.DEFAUL
     slides_info = ""
     for s in new_scenario.get("slides", []):
         content = s.get('head_copy', '')
-        slides_info += f"• **Slide {s.get('slide_num')} ({s.get('type')})**: {content}\n"
+        slides_info += f"• **Slide {s.get('slide_num')}**: {content}\n"
 
     scenario_msg = f"""
 📱 **[수정된 홍보 포스팅 시나리오]**
