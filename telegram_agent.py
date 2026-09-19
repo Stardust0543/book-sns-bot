@@ -47,7 +47,11 @@ UNSPLASH_ACCESS_KEY = os.environ.get("UNSPLASH_ACCESS_KEY")
 client = genai.Client(api_key=GEMINI_API_KEY)
 logging.basicConfig(level=logging.INFO)
 
-WAITING_FOR_FEEDBACK = 1
+# 대화 상태 정의 (2단계 프로세스)
+WAITING_SCENARIO_ACTION = 1
+WAITING_SCENARIO_FEEDBACK = 2
+WAITING_FINAL_APPROVAL = 3
+
 user_drafts = {}
 
 FONT_PATH = "NanumGothic.ttf"
@@ -122,11 +126,11 @@ def get_pending_event_from_sheet():
     return None
 
 # ----------------------------------------------------
-# 4. Gemini AI 감성 시나리오 생성
+# 4. Gemini AI 가변 장수(1~6장) 시나리오 생성
 # ----------------------------------------------------
-def generate_scenario_and_draft(book_title, author, event_info, feedback=None):
+def generate_dynamic_scenario(book_title, author, event_info, feedback=None):
     prompt = f"""
-    너는 인스타그램 감성 도서 마케터야. 아래 도서 정보와 요청사항을 바탕으로 독자의 가슴을 울리는 감성 카드뉴스 시나리오 및 본문 포스팅을 작성해줘. 이미지 장수는 시나리오에 맞게 3~6장으로 해줘.
+    너는 인스타그램 감성 출판 기획 마케터야. 아래 도서 정보와 홍보 목적에 맞춰 카드뉴스 시나리오(1장~6장 사이 가변) 및 인스타그램 포스팅 문구를 기획해줘.
 
     [도서 정보]
     - 도서명: {book_title}
@@ -137,17 +141,30 @@ def generate_scenario_and_draft(book_title, author, event_info, feedback=None):
         prompt += f"\n- [사용자 수정 요청사항]: {feedback}"
 
     prompt += """
+    [기획 지침]:
+    1. 도서의 홍보 목적과 내용의 깊이에 맞춰 카드뉴스 장수를 최소 1장에서 최대 6장 사이로 자율 구성할 것.
+    2. 각 카드별 구체적인 역할(표지, 인용구, 에피소드 스토리, 추천 대상 등)과 텍스트 내용을 명확히 설정할 것.
+
     반드시 아래 JSON 포맷으로만 응답해줘. 다른 설명 없이 순수 JSON 텍스트만 반환해.
 
     {
-      "card1_badge": "슬라이드1 상단 뱃지 (예: #가슴을울리는역사)",
-      "card1_sub": "슬라이드1 캐치프레이즈 (예: 역사의 거센 파도 속, 우리가 지켜낸 이름)",
-      "card2_quote": "슬라이드2 책 속 명문장 또는 핵심 질문 (40자 이내, 강렬하고 감성적인 인용구)",
-      "card2_sub": "슬라이드2 인용구 부연 설명 (35자 이내)",
-      "card3_title": "슬라이드3 메인 질문/주제 (예: 오늘, 당신이 지키고 싶은 가치는 무엇인가요?)",
-      "card3_point1": "슬라이드3 주요 포인트 1 (25자 이내)",
-      "card3_point2": "슬라이드3 주요 포인트 2 (25자 이내)",
-      "caption": "인스타그램 본문 텍스트 (감성적인 문체, 해시태그 포함 600자 이내)"
+      "concept": "전체 카드뉴스 기획 콘셉트 한 줄 요약",
+      "slides": [
+        {
+          "slide_num": 1,
+          "type": "cover",
+          "badge": "#카테고리태그",
+          "sub_title": "표지 캐치프레이즈",
+          "title": "도서 메인 제목"
+        },
+        {
+          "slide_num": 2,
+          "type": "quote",
+          "main_text": "가슴을 울리는 책 속 한 구절 또는 강렬한 질문",
+          "sub_text": "인용구 부연 설명"
+        }
+      ],
+      "caption": "인스타그램 본문 텍스트 (줄바꿈 및 해시태그 포함 600자 이내)"
     }
     """
 
@@ -165,22 +182,38 @@ def generate_scenario_and_draft(book_title, author, event_info, feedback=None):
         data = json.loads(text)
     except Exception:
         data = {
-            "card1_badge": "#오늘의추천도서",
-            "card1_sub": "역사의 순간 속에서 찾아낸 우리의 이야기",
-            "card2_quote": "“기억하지 않는 역사는 되풀이된다.”",
-            "card2_sub": "우리가 반드시 알아야 할 잊혀진 선조들의 숨결",
-            "card3_title": "이 책이 당신의 마음에 전하는 깊은 울림",
-            "card3_point1": "역사적 사실 너머의 가슴 뜨거운 감동",
-            "card3_point2": "지금 온·오프라인 서점에서 만나보세요",
+            "concept": "한글날 기념 감성 역사 에세이 추천",
+            "slides": [
+                {
+                    "slide_num": 1,
+                    "type": "cover",
+                    "badge": "#역사속이야기",
+                    "sub_title": "우리가 무심코 쓰는 글자에 담긴 수많은 눈물과 기적",
+                    "title": book_title
+                },
+                {
+                    "slide_num": 2,
+                    "type": "quote",
+                    "main_text": "“세상에서 가장 아름다운 유산, 우리가 숨 쉬듯 지켜온 우리말”",
+                    "sub_text": "오늘 하루, 우리의 세종과 그날의 마음을 기억해 주세요"
+                },
+                {
+                    "slide_num": 3,
+                    "type": "detail",
+                    "main_text": "이 책을 꼭 읽어야 하는 이유",
+                    "sub_text": "1. 독도에서 임시정부까지 살아있는 역사 이슈\n2. 서경덕 교수와 전문가들의 명쾌한 해설"
+                }
+            ],
             "caption": f"📖 《{book_title}》\n저자: {author}\n\n{event_info}\n\n#도서추천 #한국사 #책스타그램 #허들링북스"
         }
     return data
 
 # ----------------------------------------------------
-# 5. 동적 감성 디자인 카드뉴스 3장 생성
+# 5. 확정 시나리오 기반 가변 카드뉴스 이미지 합성
 # ----------------------------------------------------
-def create_card_news_pack(book_title, author, scenario_data, cover_url=None, aspect_ratio="4:5"):
+def create_dynamic_card_news_pack(book_title, author, scenario_data, cover_url=None, aspect_ratio="4:5"):
     image_paths = []
+    slides = scenario_data.get("slides", [])
     
     if aspect_ratio == "1:1":
         canvas_w, canvas_h = 1080, 1080
@@ -204,135 +237,92 @@ def create_card_news_pack(book_title, author, scenario_data, cover_url=None, asp
 
     bg_img = get_free_stock_image("book,library,history,emotional", canvas_w, canvas_h)
 
-    # ===== 1장: 대형 포커스 표지 + 그라데이션 후광 템플릿 =====
-    c1 = bg_img.copy()
-    overlay1 = Image.new("RGBA", (canvas_w, canvas_h), (10, 15, 30, 180))
-    c1 = Image.alpha_composite(c1, overlay1)
-    d1 = ImageDraw.Draw(c1)
-
-    # 상단 감성 뱃지
-    d1.text((canvas_w / 2, int(canvas_h * 0.10)), scenario_data.get("card1_badge", "#FEATURED_BOOK"), font=font_sub, fill=(56, 189, 248), anchor="mm")
-
-    if cover_img:
-        img_temp = cover_img.copy()
-        max_h = int(canvas_h * 0.48)
-        img_temp.thumbnail((int(canvas_w * 0.55), max_h))
-        w_size, h_size = img_temp.size
-        cover_x = (canvas_w - w_size) // 2
-        cover_y = int(canvas_h * 0.16)
+    for slide_idx, slide in enumerate(slides, start=1):
+        s_type = slide.get("type", "quote")
+        c = bg_img.copy()
         
-        # 은은한 글로우 후광 박스
-        d1.rounded_rectangle([cover_x-16, cover_y-16, cover_x+w_size+16, cover_y+h_size+16], radius=20, fill=(255, 255, 255, 30))
-        c1.paste(img_temp, (cover_x, cover_y), img_temp)
-        text_y = cover_y + h_size + int(canvas_h * 0.06)
-    else:
-        text_y = canvas_h // 2
+        # 1) 표지 슬라이드 (cover)
+        if s_type == "cover" or slide_idx == 1:
+            overlay = Image.new("RGBA", (canvas_w, canvas_h), (10, 15, 30, 180))
+            c = Image.alpha_composite(c, overlay)
+            d = ImageDraw.Draw(c)
 
-    # 캐치프레이즈 및 타이틀
-    sub_text = scenario_data.get("card1_sub", "")
-    d1.text((canvas_w / 2, text_y), sub_text, font=font_body, fill=(203, 213, 225), anchor="mm")
-    d1.text((canvas_w / 2, text_y + int(canvas_h * 0.05)), f"《{book_title}》", font=font_huge, fill=(255, 255, 255), anchor="mm")
-    d1.text((canvas_w / 2, text_y + int(canvas_h * 0.11)), f"{author} 지음", font=font_sub, fill=(148, 163, 184), anchor="mm")
-    
-    p1_path = "card1.png"
-    c1.convert("RGB").save(p1_path, "PNG")
-    image_paths.append(p1_path)
+            d.text((canvas_w / 2, int(canvas_h * 0.10)), slide.get("badge", "#FEATURED_BOOK"), font=font_sub, fill=(56, 189, 248), anchor="mm")
 
-    # ===== 2장: 책 속 명문장/질문 인용 템플릿 (인용구 타이포그래피) =====
-    c2 = bg_img.copy()
-    overlay2 = Image.new("RGBA", (canvas_w, canvas_h), (15, 23, 42, 230))
-    c2 = Image.alpha_composite(c2, overlay2)
-    d2 = ImageDraw.Draw(c2)
+            if cover_img:
+                img_temp = cover_img.copy()
+                max_h = int(canvas_h * 0.48)
+                img_temp.thumbnail((int(canvas_w * 0.55), max_h))
+                w_size, h_size = img_temp.size
+                cover_x = (canvas_w - w_size) // 2
+                cover_y = int(canvas_h * 0.16)
+                
+                d.rounded_rectangle([cover_x-16, cover_y-16, cover_x+w_size+16, cover_y+h_size+16], radius=20, fill=(255, 255, 255, 30))
+                c.paste(img_temp, (cover_x, cover_y), img_temp)
+                text_y = cover_y + h_size + int(canvas_h * 0.06)
+            else:
+                text_y = canvas_h // 2
 
-    # 대형 큰따옴표 장식
-    font_quote = get_font(int(canvas_h * 0.12))
-    d2.text((canvas_w / 2, int(canvas_h * 0.22)), "“", font=font_quote, fill=(56, 189, 248, 120), anchor="mm")
+            sub_text = slide.get("sub_title", "")
+            d.text((canvas_w / 2, text_y), sub_text, font=font_body, fill=(203, 213, 225), anchor="mm")
+            d.text((canvas_w / 2, text_y + int(canvas_h * 0.05)), f"《{book_title}》", font=font_huge, fill=(255, 255, 255), anchor="mm")
+            d.text((canvas_w / 2, text_y + int(canvas_h * 0.11)), f"{author} 저", font=font_sub, fill=(148, 163, 184), anchor="mm")
 
-    quote_text = scenario_data.get("card2_quote", "")
-    q_lines = textwrap.wrap(quote_text, width=16)
-    
-    start_y = int(canvas_h * 0.38)
-    for idx, l in enumerate(q_lines):
-        d2.text((canvas_w / 2, start_y + (idx * int(canvas_h * 0.06))), l, font=font_huge, fill=(255, 255, 255), anchor="mm")
+        # 2) 명문장/질문 슬라이드 (quote)
+        elif s_type == "quote":
+            overlay = Image.new("RGBA", (canvas_w, canvas_h), (15, 23, 42, 230))
+            c = Image.alpha_composite(c, overlay)
+            d = ImageDraw.Draw(c)
 
-    sub_q = scenario_data.get("card2_sub", "")
-    d2.text((canvas_w / 2, start_y + (len(q_lines) * int(canvas_h * 0.06)) + int(canvas_h * 0.08)), sub_q, font=font_sub, fill=(148, 163, 184), anchor="mm")
+            font_quote = get_font(int(canvas_h * 0.12))
+            d.text((canvas_w / 2, int(canvas_h * 0.22)), "“", font=font_quote, fill=(56, 189, 248, 120), anchor="mm")
 
-    p2_path = "card2.png"
-    c2.convert("RGB").save(p2_path, "PNG")
-    image_paths.append(p2_path)
+            quote_text = slide.get("main_text", "")
+            q_lines = textwrap.wrap(quote_text, width=16)
+            
+            start_y = int(canvas_h * 0.38)
+            for idx, l in enumerate(q_lines):
+                d.text((canvas_w / 2, start_y + (idx * int(canvas_h * 0.06))), l, font=font_huge, fill=(255, 255, 255), anchor="mm")
 
-    # ===== 3장: 비대칭 감성 레이아웃 & 추천 인사이트 템플릿 =====
-    c3 = Image.new("RGBA", (canvas_w, canvas_h), (248, 250, 252))
-    d3 = ImageDraw.Draw(c3)
+            sub_q = slide.get("sub_text", "")
+            d.text((canvas_w / 2, start_y + (len(q_lines) * int(canvas_h * 0.06)) + int(canvas_h * 0.08)), sub_q, font=font_sub, fill=(148, 163, 184), anchor="mm")
 
-    # 상단 스톡 비주얼 헤더
-    header_h = int(canvas_h * 0.40)
-    header_bg = bg_img.crop((0, 0, canvas_w, header_h))
-    overlay3 = Image.new("RGBA", (canvas_w, header_h), (15, 23, 42, 140))
-    header_bg = Image.alpha_composite(header_bg, overlay3)
-    c3.paste(header_bg, (0, 0))
+        # 3) 기타 상세/요약 슬라이드 (detail)
+        else:
+            c = Image.new("RGBA", (canvas_w, canvas_h), (248, 250, 252))
+            d = ImageDraw.Draw(c)
 
-    d3.text((canvas_w / 2, int(header_h * 0.35)), "BOOK INSIGHT", font=font_sub, fill=(56, 189, 248), anchor="mm")
-    
-    title_3 = scenario_data.get("card3_title", f"《{book_title}》")
-    t3_lines = textwrap.wrap(title_3, width=16)
-    for idx, l in enumerate(t3_lines[:2]):
-        d3.text((canvas_w / 2, int(header_h * 0.60) + (idx * int(canvas_h * 0.05))), l, font=font_title, fill=(255, 255, 255), anchor="mm")
+            header_h = int(canvas_h * 0.35)
+            header_bg = bg_img.crop((0, 0, canvas_w, header_h))
+            overlay_h = Image.new("RGBA", (canvas_w, header_h), (15, 23, 42, 140))
+            header_bg = Image.alpha_composite(header_bg, overlay_h)
+            c.paste(header_bg, (0, 0))
 
-    # 하단 2개 핵심 포인트 카드 (비대칭 카드 스타일)
-    box_m = int(canvas_w * 0.08)
-    card_y1 = header_h + int(canvas_h * 0.06)
-    
-    p1 = scenario_data.get("card3_point1", "")
-    if p1:
-        d3.rounded_rectangle([box_m, card_y1, canvas_w - box_m, card_y1 + int(canvas_h * 0.16)], radius=20, fill=(255, 255, 255), outline=(226, 232, 240), width=2)
-        d3.text((box_m + 40, card_y1 + 35), "POINT 01", font=font_body, fill=(14, 165, 233))
-        d3.text((box_m + 40, card_y1 + 85), p1, font=font_sub, fill=(30, 41, 59))
+            d.text((canvas_w / 2, int(header_h * 0.35)), f"SLIDE 0{slide_idx}", font=font_sub, fill=(56, 189, 248), anchor="mm")
+            
+            main_t = slide.get("main_text", "")
+            d.text((canvas_w / 2, int(header_h * 0.65)), main_t, font=font_title, fill=(255, 255, 255), anchor="mm")
 
-    p2 = scenario_data.get("card3_point2", "")
-    card_y2 = card_y1 + int(canvas_h * 0.20)
-    if p2:
-        d3.rounded_rectangle([box_m, card_y2, canvas_w - box_m, card_y2 + int(canvas_h * 0.16)], radius=20, fill=(255, 255, 255), outline=(226, 232, 240), width=2)
-        d3.text((box_m + 40, card_y2 + 35), "POINT 02", font=font_body, fill=(14, 165, 233))
-        d3.text((box_m + 40, card_y2 + 85), p2, font=font_sub, fill=(30, 41, 59))
+            box_m = int(canvas_w * 0.08)
+            card_y = header_h + int(canvas_h * 0.06)
+            card_h = canvas_h - header_h - int(canvas_h * 0.12)
+            
+            d.rounded_rectangle([box_m, card_y, canvas_w - box_m, card_y + card_h], radius=24, fill=(255, 255, 255), outline=(226, 232, 240), width=2)
+            
+            sub_body = slide.get("sub_text", "")
+            lines = textwrap.wrap(sub_body, width=20)
+            for idx, l in enumerate(lines[:8]):
+                d.text((canvas_w / 2, card_y + int(card_h * 0.20) + (idx * int(canvas_h * 0.05))), l, font=font_sub, fill=(30, 41, 59), anchor="mm")
 
-    p3_path = "card3.png"
-    c3.convert("RGB").save(p3_path, "PNG")
-    image_paths.append(p3_path)
+        p_path = f"card_{slide_idx}.png"
+        c.convert("RGB").save(p_path, "PNG")
+        image_paths.append(p_path)
 
     return image_paths
 
 # ----------------------------------------------------
-# 6. 텔레그램 대화 핸들러
+# 6. 텔레그램 대화 핸들러 (2단계 검토 프로세스)
 # ----------------------------------------------------
-async def send_draft_pack(chat_id, context, data, scenario_data):
-    aspect = data.get("aspect_ratio", "4:5")
-    img_paths = create_card_news_pack(data["book_title"], data["author"], scenario_data, data["cover_url"], aspect)
-
-    media = [InputMediaPhoto(media=open(p, "rb")) for p in img_paths]
-    await context.bot.send_media_group(chat_id=chat_id, media=media)
-
-    caption_text = scenario_data.get("caption", "")
-    draft_message = f"📌 **[인스타그램 본문 텍스트 초안]**\n\n{caption_text}"
-    if len(draft_message) > 4000:
-        draft_message = draft_message[:3900] + "...\n(길이 제한으로 일부 생략)"
-
-    keyboard = [
-        [
-            InlineKeyboardButton("👍 승인 및 완료", callback_data="approve"),
-            InlineKeyboardButton("✏️ 수정 요청", callback_data="request_edit"),
-        ]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-
-    await context.bot.send_message(
-        chat_id=chat_id,
-        text=draft_message,
-        parse_mode="Markdown",
-        reply_markup=reply_markup
-    )
-
 async def start_draft(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     
@@ -343,55 +333,141 @@ async def start_draft(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user_drafts[chat_id] = event_data
     
-    scenario_data = generate_scenario_and_draft(event_data["book_title"], event_data["author"], event_data["event_info"])
-    user_drafts[chat_id]["scenario"] = scenario_data
-    
-    await send_draft_pack(chat_id, context, event_data, scenario_data)
-    return ConversationHandler.END
+    await context.bot.send_message(chat_id=chat_id, text="🧠 AI가 도서 홍보 가변 시나리오 및 본문 포스팅을 기획 중입니다...")
 
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    scenario_data = generate_dynamic_scenario(event_data["book_title"], event_data["author"], event_data["event_info"])
+    user_drafts[chat_id]["scenario"] = scenario_data
+
+    # Step 1: 시나리오 브리핑 메시지 전송
+    slides_info = ""
+    for s in scenario_data.get("slides", []):
+        slides_info += f"• **{s.get('slide_num')}장 ({s.get('type')})**: {s.get('main_text', s.get('title', ''))}\n"
+
+    scenario_msg = f"""
+📌 **[1단계: 카드뉴스 시나리오 기획안]**
+
+• **도서명**: 《{event_data['book_title']}》
+• **기획 콘셉트**: {scenario_data.get('concept')}
+• **카드뉴스 구성 (총 {len(scenario_data.get('slides', []))}장)**:
+{slides_info}
+
+----------------------------------------
+📝 **[인스타그램 본문 초안]**:
+{scenario_data.get('caption')}
+
+----------------------------------------
+👇 아래 버튼을 눌러 시나리오를 승인하고 이미지를 생성하거나, 수정 피드백을 보내주세요!
+"""
+    keyboard = [
+        [
+            InlineKeyboardButton("👍 시나리오 승인 & 이미지 생성", callback_data="approve_scenario"),
+            InlineKeyboardButton("✏️ 시나리오 수정 요청", callback_data="edit_scenario"),
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    await context.bot.send_message(chat_id=chat_id, text=scenario_msg, parse_mode="Markdown", reply_markup=reply_markup)
+    return WAITING_SCENARIO_ACTION
+
+async def handle_scenario_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     chat_id = query.message.chat_id
 
-    if query.data == "approve":
+    if query.data == "approve_scenario":
+        await query.edit_message_text(text="🎨 확정된 시나리오로 고화질 카드뉴스 이미지 팩을 생성 중입니다. 잠시만 기다려 주세요...")
+        
+        data = user_drafts[chat_id]
+        scenario = data["scenario"]
+        
+        # 이미지 생성 및 앨범 전송
+        img_paths = create_dynamic_card_news_pack(data["book_title"], data["author"], scenario, data["cover_url"], data.get("aspect_ratio", "4:5"))
+        
+        media = [InputMediaPhoto(media=open(p, "rb")) for p in img_paths]
+        await context.bot.send_media_group(chat_id=chat_id, media=media)
+
+        keyboard = [
+            [
+                InlineKeyboardButton("✅ 최종 포스팅 완료 (Done 처리)", callback_data="final_done"),
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await context.bot.send_message(chat_id=chat_id, text="📸 생성된 카드뉴스 이미지 팩입니다. 검토 후 완료 버튼을 눌러주세요.", reply_markup=reply_markup)
+        return WAITING_FINAL_APPROVAL
+
+    elif query.data == "edit_scenario":
+        await query.edit_message_text(text="✏️ **[시나리오 수정]** 보완할 시나리오 방향이나 메시지를 답장으로 입력해 주세요.")
+        return WAITING_SCENARIO_FEEDBACK
+
+async def receive_scenario_feedback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    feedback_text = update.message.text
+
+    await update.message.reply_text("🔄 피드백을 반영하여 시나리오를 재기획 중입니다...")
+
+    data = user_drafts[chat_id]
+    new_scenario = generate_dynamic_scenario(data["book_title"], data["author"], data["event_info"], feedback=feedback_text)
+    user_drafts[chat_id]["scenario"] = new_scenario
+
+    slides_info = ""
+    for s in new_scenario.get("slides", []):
+        slides_info += f"• **{s.get('slide_num')}장 ({s.get('type')})**: {s.get('main_text', s.get('title', ''))}\n"
+
+    scenario_msg = f"""
+📌 **[수정된 카드뉴스 시나리오 기획안]**
+
+• **도서명**: 《{data['book_title']}》
+• **기획 콘셉트**: {new_scenario.get('concept')}
+• **카드뉴스 구성 (총 {len(new_scenario.get('slides', []))}장)**:
+{slides_info}
+
+----------------------------------------
+📝 **[인스타그램 본문 초안]**:
+{new_scenario.get('caption')}
+
+----------------------------------------
+👇 아래 버튼을 눌러 시나리오를 승인하거나 추가 수정을 요청해 주세요!
+"""
+    keyboard = [
+        [
+            InlineKeyboardButton("👍 시나리오 승인 & 이미지 생성", callback_data="approve_scenario"),
+            InlineKeyboardButton("✏️ 시나리오 수정 요청", callback_data="edit_scenario"),
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    await context.bot.send_message(chat_id=chat_id, text=scenario_msg, parse_mode="Markdown", reply_markup=reply_markup)
+    return WAITING_SCENARIO_ACTION
+
+async def handle_final_approval(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    chat_id = query.message.chat_id
+
+    if query.data == "final_done":
         if chat_id in user_drafts and "worksheet" in user_drafts[chat_id]:
             row_idx = user_drafts[chat_id]["row_index"]
             ws = user_drafts[chat_id]["worksheet"]
             ws.update_cell(row_idx, 5, "Done")
 
-        await query.edit_message_text(text="✅ **[승인 완료]** 포스팅이 승인되었으며 구글 시트 상태가 'Done'으로 변경되었습니다!")
+        await query.edit_message_text(text="✅ **[최종 처리 완료]** 구글 시트 상태가 'Done'으로 업로드 업데이트되었습니다!")
         return ConversationHandler.END
-
-    elif query.data == "request_edit":
-        await query.edit_message_text(text="✏️ **[수정 요청]** 보완할 요청 사항을 메시지로 입력해 주세요.")
-        return WAITING_FOR_FEEDBACK
-
-async def receive_feedback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    feedback_text = update.message.text
-
-    await update.message.reply_text("🔄 피드백을 반영하여 감성 카드뉴스 시나리오와 3장 이미지를 재생성 중입니다...")
-
-    data = user_drafts[chat_id]
-    new_scenario = generate_scenario_and_draft(data["book_title"], data["author"], data["event_info"], feedback=feedback_text)
-    user_drafts[chat_id]["scenario"] = new_scenario
-    
-    await send_draft_pack(chat_id, context, data, new_scenario)
-    return ConversationHandler.END
 
 def main():
     threading.Thread(target=run_flask, daemon=True).start()
 
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     conv_handler = ConversationHandler(
-        entry_points=[
-            CommandHandler("start", start_draft),
-            CallbackQueryHandler(button_handler)
-        ],
+        entry_points=[CommandHandler("start", start_draft)],
         states={
-            WAITING_FOR_FEEDBACK: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_feedback)
+            WAITING_SCENARIO_ACTION: [
+                CallbackQueryHandler(handle_scenario_action)
+            ],
+            WAITING_SCENARIO_FEEDBACK: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_scenario_feedback)
+            ],
+            WAITING_FINAL_APPROVAL: [
+                CallbackQueryHandler(handle_final_approval)
             ]
         },
         fallbacks=[],
