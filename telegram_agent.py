@@ -3,10 +3,8 @@ import json
 import logging
 import threading
 import warnings
+import asyncio
 import requests
-import textwrap
-from io import BytesIO
-from PIL import Image, ImageDraw, ImageFont
 from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
 from telegram.ext import (
@@ -20,6 +18,7 @@ from telegram.ext import (
 )
 import gspread
 from google import genai
+from playwright.async_api import async_playwright
 
 warnings.filterwarnings("ignore", category=UserWarning, module="google_genai")
 
@@ -37,7 +36,7 @@ def run_flask():
     web_app.run(host="0.0.0.0", port=port)
 
 # ----------------------------------------------------
-# 1. 환경 변수 및 폰트 설정
+# 1. 환경 변수 및 초기화
 # ----------------------------------------------------
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
@@ -50,42 +49,20 @@ logging.basicConfig(level=logging.INFO)
 WAITING_FOR_FEEDBACK = 1
 user_drafts = {}
 
-FONT_PATH = "NanumGothic.ttf"
-def get_font(size):
-    if not os.path.exists(FONT_PATH):
-        font_url = "https://github.com/google/fonts/raw/main/ofl/nanumgothic/NanumGothic-Bold.ttf"
-        try:
-            res = requests.get(font_url, timeout=10)
-            with open(FONT_PATH, "wb") as f:
-                f.write(res.content)
-            logging.info("한글 폰트(NanumGothic) 다운로드 완료")
-        except Exception as e:
-            logging.error(f"폰트 다운로드 실패: {e}")
-            return ImageFont.load_default()
-    try:
-        return ImageFont.truetype(FONT_PATH, size)
-    except Exception:
-        return ImageFont.load_default()
-
 # ----------------------------------------------------
-# 2. Unsplash 고화질 무료 이미지 가져오기
+# 2. Unsplash 무료 고화질 스톡 이미지 URL 가져오기
 # ----------------------------------------------------
-def get_free_stock_image(keyword="reading", width=1080, height=1350):
+def get_unsplash_bg_url(keyword="reading"):
     try:
         if UNSPLASH_ACCESS_KEY:
             url = f"https://api.unsplash.com/photos/random?query={keyword}&client_id={UNSPLASH_ACCESS_KEY}"
             res = requests.get(url, timeout=5)
             if res.status_code == 200:
-                img_url = res.json()["urls"]["regular"]
-                img_res = requests.get(img_url, timeout=5)
-                img = Image.open(BytesIO(img_res.content)).convert("RGBA")
-                return img.resize((width, height))
+                return res.json()["urls"]["regular"]
     except Exception as e:
         logging.error(f"Unsplash 이미지 로드 실패: {e}")
 
-    fallback_url = f"https://picsum.photos/{width}/{height}"
-    res = requests.get(fallback_url, timeout=5)
-    return Image.open(BytesIO(res.content)).convert("RGBA")
+    return "https://images.unsplash.com/photo-1457369804613-52c61a468e7d?auto=format&fit=crop&w=1080&q=80"
 
 # ----------------------------------------------------
 # 3. 구글 시트 연동
@@ -102,7 +79,6 @@ def get_pending_event_from_sheet():
         worksheet = spreadsheet.worksheet("Events")
         
         rows = worksheet.get_all_values()
-        
         if len(rows) <= 1:
             return None
 
@@ -123,11 +99,11 @@ def get_pending_event_from_sheet():
     return None
 
 # ----------------------------------------------------
-# 4. Gemini AI 풍성한 카드뉴스 시나리오 생성
+# 4. Gemini AI 시나리오 생성
 # ----------------------------------------------------
 def generate_scenario_and_draft(book_title, author, event_info, feedback=None):
     prompt = f"""
-    너는 도서 전문 출판 마케터야. 아래 도서 정보와 홍보 키워드를 바탕으로 인스타그램 카드뉴스 3장에 들어갈 풍성하고 깊이 있는 내용의 시나리오 및 본문 포스팅을 작성해줘.
+    너는 도서 전문 트렌디 마케터야. 아래 도서 정보와 요청사항을 바탕으로 인스타그램 카드뉴스 3장 시나리오 및 본문 포스팅을 작성해줘.
 
     [도서 정보]
     - 도서명: {book_title}
@@ -138,7 +114,7 @@ def generate_scenario_and_draft(book_title, author, event_info, feedback=None):
         prompt += f"\n- [사용자 수정 요청사항]: {feedback}"
 
     prompt += """
-    반드시 아래 JSON 포맷으로만 응답해줘. 다른 설명이나 마크다운 표현 없이 순수 JSON 텍스트만 반환해.
+    반드시 아래 JSON 포맷으로만 응답해줘. 다른 설명 없이 순수 JSON 텍스트만 반환해.
 
     {
       "card1_sub": "슬라이드1 카테고리/캐치프레이즈 (예: 한글날 기념 특별 기획)",
@@ -170,161 +146,163 @@ def generate_scenario_and_draft(book_title, author, event_info, feedback=None):
         data = {
             "card1_sub": "특집 추천 도서",
             "card2_title": f"《{book_title}》 핵심 이야기",
-            "card2_p1": "• 역사 속 숨겨진 감동적인 순간들",
-            "card2_p2": "• 저자가 직접 전하는 생생한 현장 기록",
-            "card2_p3": "• 오늘날 우리가 꼭 기억해야 할 역사적 가치",
+            "card2_p1": "역사 속 숨겨진 감동적인 순간들",
+            "card2_p2": "저자가 직접 전하는 생생한 현장 기록",
+            "card2_p3": "오늘날 우리가 꼭 기억해야 할 역사적 가치",
             "card3_title": "이런 분들께 추천합니다",
-            "card3_r1": "✔ 깊이 있는 역사를 쉽게 읽고 싶은 독자",
-            "card3_r2": "✔ 올바른 역사 의식을 키우고 싶은 청소년",
-            "card3_r3": "✔ 가슴 따뜻한 이야기를 찾는 모든 분들",
+            "card3_r1": "깊이 있는 역사를 쉽게 읽고 싶은 독자",
+            "card3_r2": "올바른 역사 의식을 키우고 싶은 청소년",
+            "card3_r3": "가슴 따뜻한 이야기를 찾는 모든 분들",
             "caption": f"📖 《{book_title}》\n저자: {author}\n\n{event_info}\n\n#도서추천 #한국사 #책스타그램 #허들링북스"
         }
     return data
 
 # ----------------------------------------------------
-# 5. 시나리오 기반 풍성한 카드뉴스 3장 자동 합성
+# 5. HTML/CSS 기반 웹 렌더링 카드뉴스 생성 엔진
 # ----------------------------------------------------
-def create_card_news_pack(book_title, author, scenario_data, cover_url=None, aspect_ratio="4:5"):
-    image_paths = []
+def build_html_template(card_num, book_title, author, scenario_data, cover_url, bg_url):
+    """트렌디한 웹 디자이너 스타일의 HTML/CSS 템플릿 코드 생성"""
     
-    if aspect_ratio == "1:1":
-        canvas_w, canvas_h = 1080, 1080
-    elif aspect_ratio == "1.91:1":
-        canvas_w, canvas_h = 1080, 566
+    cover_img_html = f'<img src="{cover_url}" class="book-cover">' if cover_url else ''
+    
+    css_common = """
+    @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css');
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Pretendard', sans-serif; }
+    body { width: 1080px; height: 1350px; overflow: hidden; background: #0f172a; position: relative; }
+    .bg-image {
+        position: absolute; width: 100%; height: 100%;
+        background-image: url('""" + bg_url + """');
+        background-size: cover; background-position: center;
+        filter: blur(8px) brightness(0.45); transform: scale(1.05);
+    }
+    .overlay {
+        position: absolute; width: 100%; height: 100%;
+        background: linear-gradient(180deg, rgba(15,23,42,0.4) 0%, rgba(15,23,42,0.85) 100%);
+    }
+    .container {
+        position: relative; z-index: 10; width: 100%; height: 100%;
+        padding: 80px 70px; display: flex; flex-direction: column;
+        justify-content: space-between; align-items: center; color: #fff;
+    }
+    .tag {
+        background: rgba(56, 189, 248, 0.2); border: 1px solid rgba(56, 189, 248, 0.5);
+        color: #38bdf8; padding: 12px 28px; border-radius: 30px; font-size: 22px;
+        font-weight: 700; letter-spacing: 2px; text-transform: uppercase;
+    }
+    .glass-card {
+        background: rgba(255, 255, 255, 0.08); backdrop-filter: blur(16px);
+        border: 1px solid rgba(255, 255, 255, 0.18); border-radius: 32px;
+        box-shadow: 0 30px 60px rgba(0,0,0,0.4); width: 100%; padding: 50px 40px;
+    }
+    """
+
+    if card_num == 1:
+        html = f"""
+        <!DOCTYPE html><html><head><style>{css_common}
+        .book-cover {{
+            width: 380px; height: 540px; object-fit: cover; border-radius: 16px;
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.7); border: 1px solid rgba(255,255,255,0.2);
+        }}
+        .title-box {{ text-align: center; margin-top: 30px; }}
+        .title {{ font-size: 52px; font-weight: 800; color: #ffffff; line-height: 1.3; text-shadow: 0 4px 12px rgba(0,0,0,0.5); }}
+        .author {{ font-size: 28px; color: #cbd5e1; font-weight: 500; margin-top: 16px; }}
+        </style></head><body>
+        <div class="bg-image"></div><div class="overlay"></div>
+        <div class="container">
+            <div class="tag">{scenario_data.get("card1_sub", "NEW BOOK")}</div>
+            <div style="margin-top: 40px;">{cover_img_html}</div>
+            <div class="title-box">
+                <div class="title">《{book_title}》</div>
+                <div class="author">{author} 저</div>
+            </div>
+        </div></body></html>
+        """
+    elif card_num == 2:
+        html = f"""
+        <!DOCTYPE html><html><head><style>{css_common}
+        .header {{ text-align: center; margin-bottom: 40px; }}
+        .main-title {{ font-size: 46px; font-weight: 800; color: #ffffff; margin-top: 20px; }}
+        .point-item {{
+            display: flex; align-items: center; background: rgba(30, 41, 59, 0.7);
+            border-left: 5px solid #38bdf8; padding: 28px 32px; border-radius: 16px;
+            margin-bottom: 24px; font-size: 26px; font-weight: 600; color: #f1f5f9; line-height: 1.4;
+        }}
+        </style></head><body>
+        <div class="bg-image"></div><div class="overlay"></div>
+        <div class="container" style="justify-content: center;">
+            <div class="header">
+                <div class="tag">INSIGHT STORY</div>
+                <div class="main-title">{scenario_data.get("card2_title", "핵심 이야기")}</div>
+            </div>
+            <div class="glass-card">
+                <div class="point-item">01. {scenario_data.get("card2_p1", "")}</div>
+                <div class="point-item">02. {scenario_data.get("card2_p2", "")}</div>
+                <div class="point-item">03. {scenario_data.get("card2_p3", "")}</div>
+            </div>
+        </div></body></html>
+        """
     else:
-        canvas_w, canvas_h = 1080, 1350
+        html = f"""
+        <!DOCTYPE html><html><head><style>{css_common}
+        .rec-header {{ text-align: center; margin-bottom: 40px; }}
+        .rec-title {{ font-size: 42px; font-weight: 800; color: #ffffff; margin-top: 16px; }}
+        .rec-box {{
+            background: #ffffff; border-radius: 28px; padding: 40px 30px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.3); color: #0f172a; width: 100%;
+        }}
+        .rec-item {{
+            display: flex; align-items: center; background: #f8fafc;
+            padding: 24px 28px; border-radius: 16px; margin-bottom: 20px;
+            font-size: 25px; font-weight: 700; color: #334155; border: 1px solid #e2e8f0;
+        }}
+        .check-icon {{ color: #0284c7; margin-right: 16px; font-weight: 900; }}
+        </style></head><body>
+        <div class="bg-image"></div><div class="overlay"></div>
+        <div class="container" style="justify-content: center;">
+            <div class="rec-header">
+                <div class="tag">RECOMMENDATION</div>
+                <div class="rec-title">《{book_title}》</div>
+            </div>
+            <div class="rec-box">
+                <div style="font-size: 28px; font-weight: 800; color: #0f172a; margin-bottom: 30px; text-align: center;">
+                    {scenario_data.get("card3_title", "이런 분들께 강력 추천합니다")}
+                </div>
+                <div class="rec-item"><span class="check-icon">✓</span> {scenario_data.get("card3_r1", "")}</div>
+                <div class="rec-item"><span class="check-icon">✓</span> {scenario_data.get("card3_r2", "")}</div>
+                <div class="rec-item"><span class="check-icon">✓</span> {scenario_data.get("card3_r3", "")}</div>
+            </div>
+        </div></body></html>
+        """
+    return html
 
-    font_title = get_font(int(canvas_h * 0.038))
-    font_sub = get_font(int(canvas_h * 0.025))
-    font_body = get_font(int(canvas_h * 0.022))
+async def render_html_to_images(book_title, author, scenario_data, cover_url):
+    """Playwright를 이용해 HTML 코드를 고화질 인스타그램 카드뉴스 PNG로 변환"""
+    bg_url = get_unsplash_bg_url("book,library,history")
+    img_paths = []
 
-    cover_img = None
-    if cover_url and cover_url.startswith("http"):
-        try:
-            res = requests.get(cover_url, timeout=5)
-            cover_img = Image.open(BytesIO(res.content)).convert("RGBA")
-        except Exception as e:
-            logging.error(f"표지 다운로드 실패: {e}")
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        page = await browser.new_page(viewport={"width": 1080, "height": 1350})
 
-    bg_img = get_free_stock_image("book,library,history", canvas_w, canvas_h)
+        for card_num in range(1, 4):
+            html_content = build_html_template(card_num, book_title, author, scenario_data, cover_url, bg_url)
+            await page.set_content(html_content)
+            await page.wait_for_timeout(300) # 스타일 및 폰트 렌더링 완료 대기
+            
+            output_path = f"card_{card_num}.png"
+            await page.screenshot(path=output_path)
+            img_paths.append(output_path)
 
-    # ===== 1장: 메인 표지 카드뉴스 =====
-    c1 = bg_img.copy()
-    overlay1 = Image.new("RGBA", (canvas_w, canvas_h), (15, 23, 42, 170))
-    c1 = Image.alpha_composite(c1, overlay1)
-    d1 = ImageDraw.Draw(c1)
-
-    margin = int(canvas_w * 0.06)
-    d1.rectangle([margin, margin, canvas_w-margin, canvas_h-margin], outline=(255, 255, 255, 100), width=2)
-
-    d1.text((canvas_w / 2, int(canvas_h * 0.12)), scenario_data.get("card1_sub", "FEATURED BOOK"), font=font_sub, fill=(56, 189, 248), anchor="mm")
-
-    if cover_img:
-        img_temp = cover_img.copy()
-        max_h = int(canvas_h * 0.50)
-        img_temp.thumbnail((int(canvas_w * 0.55), max_h))
-        w_size, h_size = img_temp.size
-        cover_x = (canvas_w - w_size) // 2
-        cover_y = int(canvas_h * 0.18)
-        
-        d1.rounded_rectangle([cover_x-12, cover_y-12, cover_x+w_size+12, cover_y+h_size+12], radius=16, fill=(255, 255, 255, 40))
-        c1.paste(img_temp, (cover_x, cover_y), img_temp)
-        text_y = cover_y + h_size + int(canvas_h * 0.06)
-    else:
-        text_y = canvas_h // 2
-
-    d1.text((canvas_w / 2, text_y), f"《{book_title}》", font=font_title, fill=(255, 255, 255), anchor="mm")
-    d1.text((canvas_w / 2, text_y + int(canvas_h * 0.05)), f"{author} 지음", font=font_sub, fill=(203, 213, 225), anchor="mm")
-    
-    p1_path = "card1.png"
-    c1.convert("RGB").save(p1_path, "PNG")
-    image_paths.append(p1_path)
-
-    # ===== 2장: 풍성한 스토리 3포인트 카드뉴스 =====
-    c2 = bg_img.copy()
-    overlay2 = Image.new("RGBA", (canvas_w, canvas_h), (15, 23, 42, 220))
-    c2 = Image.alpha_composite(c2, overlay2)
-    d2 = ImageDraw.Draw(c2)
-
-    d2.text((canvas_w / 2, int(canvas_h * 0.10)), "INSIGHT STORY", font=font_sub, fill=(56, 189, 248), anchor="mm")
-    d2.text((canvas_w / 2, int(canvas_h * 0.16)), scenario_data.get("card2_title", "핵심 스토리"), font=font_title, fill=(255, 255, 255), anchor="mm")
-
-    box_margin = int(canvas_w * 0.08)
-    d2.rounded_rectangle([box_margin, int(canvas_h * 0.24), canvas_w-box_margin, int(canvas_h * 0.88)], radius=24, fill=(30, 41, 59, 230), outline=(71, 85, 105), width=2)
-    
-    # 3가지 핵심 포인트를 선명하게 렌더링
-    points = [
-        scenario_data.get("card2_p1", ""),
-        scenario_data.get("card2_p2", ""),
-        scenario_data.get("card2_p3", "")
-    ]
-    
-    start_y = int(canvas_h * 0.32)
-    gap_y = int(canvas_h * 0.18)
-    
-    for idx, p in enumerate(points):
-        if not p: continue
-        curr_y = start_y + (idx * gap_y)
-        # 소항목 구분용 넘버링 아이콘 박스
-        d2.rounded_rectangle([box_margin + 30, curr_y, canvas_w - box_margin - 30, curr_y + int(canvas_h * 0.12)], radius=12, fill=(51, 65, 85))
-        
-        p_lines = textwrap.wrap(p, width=22)
-        for line_idx, l in enumerate(p_lines[:2]):
-            d2.text((canvas_w / 2, curr_y + int(canvas_h * 0.04) + (line_idx * 35)), l, font=font_body, fill=(241, 245, 249), anchor="mm")
-
-    p2_path = "card2.png"
-    c2.convert("RGB").save(p2_path, "PNG")
-    image_paths.append(p2_path)
-
-    # ===== 3장: 추천 대상 카드뉴스 (버튼 제거 및 깔끔한 레이아웃) =====
-    c3 = Image.new("RGBA", (canvas_w, canvas_h), (248, 250, 252))
-    d3 = ImageDraw.Draw(c3)
-
-    header_h = int(canvas_h * 0.32)
-    header_bg = bg_img.crop((0, 0, canvas_w, header_h))
-    overlay3 = Image.new("RGBA", (canvas_w, header_h), (0, 0, 0, 140))
-    header_bg = Image.alpha_composite(header_bg, overlay3)
-    c3.paste(header_bg, (0, 0))
-
-    d3.text((canvas_w / 2, int(header_h * 0.35)), "RECOMMENDATION", font=font_sub, fill=(56, 189, 248), anchor="mm")
-    d3.text((canvas_w / 2, int(header_h * 0.70)), f"《{book_title}》", font=font_title, fill=(255, 255, 255), anchor="mm")
-
-    # 하단 추천 카드 박스
-    d3.rounded_rectangle([box_margin, header_h + int(canvas_h * 0.04), canvas_w-box_margin, canvas_h - int(canvas_h * 0.06)], radius=28, fill=(255, 255, 255), outline=(226, 232, 240), width=2)
-    
-    rec_title = scenario_data.get("card3_title", "이런 분들께 이 책을 추천합니다")
-    d3.text((canvas_w / 2, header_h + int(canvas_h * 0.12)), rec_title, font=font_sub, fill=(30, 41, 59), anchor="mm")
-
-    recommends = [
-        scenario_data.get("card3_r1", ""),
-        scenario_data.get("card3_r2", ""),
-        scenario_data.get("card3_r3", "")
-    ]
-
-    rec_start_y = header_h + int(canvas_h * 0.22)
-    rec_gap = int(canvas_h * 0.12)
-    
-    for idx, r in enumerate(recommends):
-        if not r: continue
-        curr_y = rec_start_y + (idx * rec_gap)
-        d3.rounded_rectangle([box_margin + 30, curr_y, canvas_w - box_margin - 30, curr_y + int(canvas_h * 0.09)], radius=12, fill=(241, 245, 249))
-        
-        r_lines = textwrap.wrap(r, width=22)
-        for line_idx, l in enumerate(r_lines[:2]):
-            d3.text((canvas_w / 2, curr_y + int(canvas_h * 0.045) + (line_idx * 30)), l, font=font_body, fill=(51, 65, 85), anchor="mm")
-
-    p3_path = "card3.png"
-    c3.convert("RGB").save(p3_path, "PNG")
-    image_paths.append(p3_path)
-
-    return image_paths
+        await browser.close()
+    return img_paths
 
 # ----------------------------------------------------
-# 6. 텔레그램 대화 핸들러
+# 6. 텔레그램 핸들러
 # ----------------------------------------------------
 async def send_draft_pack(chat_id, context, data, scenario_data):
-    aspect = data.get("aspect_ratio", "4:5")
-    img_paths = create_card_news_pack(data["book_title"], data["author"], scenario_data, data["cover_url"], aspect)
+    img_paths = await render_html_to_images(
+        data["book_title"], data["author"], scenario_data, data["cover_url"]
+    )
 
     media = [InputMediaPhoto(media=open(p, "rb")) for p in img_paths]
     await context.bot.send_media_group(chat_id=chat_id, media=media)
@@ -387,7 +365,7 @@ async def receive_feedback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     feedback_text = update.message.text
 
-    await update.message.reply_text("🔄 피드백을 반영하여 카드뉴스 시나리오와 3장 이미지를 풍성하게 재생성 중입니다...")
+    await update.message.reply_text("🔄 피드백을 반영하여 HTML/CSS 카드뉴스와 초안을 재생성 중입니다...")
 
     data = user_drafts[chat_id]
     new_scenario = generate_scenario_and_draft(data["book_title"], data["author"], data["event_info"], feedback=feedback_text)
