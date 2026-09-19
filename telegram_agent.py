@@ -79,7 +79,7 @@ def get_pending_event_from_sheet():
         gc = gspread.service_account_from_dict(creds_dict)
         spreadsheet = gc.open("도서_이벤트_마스터")
         worksheet = spreadsheet.worksheet("Events")
-        
+
         rows = worksheet.get_all_values()
         if len(rows) <= 1:
             return None
@@ -102,6 +102,7 @@ def get_pending_event_from_sheet():
 
 # ----------------------------------------------------
 # 4. Gemini AI 전문 시나리오 기획 생성
+#    (accent_color 필드 추가: 도서 장르에 맞는 포인트 컬러를 함께 생성)
 # ----------------------------------------------------
 def generate_pro_scenario(book_title, author, event_info, feedback=None):
     prompt = f"""
@@ -117,12 +118,17 @@ def generate_pro_scenario(book_title, author, event_info, feedback=None):
         prompt += f"\n- [사용자 피드백 반영 요청]: {feedback}"
 
     prompt += """
+    또한 이 책의 장르/분위기에 가장 잘 어울리는 포인트 컬러(HEX 코드)를 하나 골라줘.
+    예: 역사/인문 → 톤 다운된 블루/브론즈 계열, 자기계발 → 밝은 하늘색/그린 계열, 에세이 → 웜톤 계열 등
+    다크 배경 위에서도 잘 보이는 채도 높은 색을 선택해.
+
     반드시 아래 JSON 포맷으로만 응답해줘. 다른 설명 없이 순수 JSON 텍스트만 반환해.
 
     {
       "intent": "기획 의도 (1-2줄)",
       "target": "주요 타깃 독자층",
       "tone": "톤앤매너",
+      "accent_color": "#38bdf8",
       "slide_count": 5,
       "slides": [
         {
@@ -156,7 +162,7 @@ def generate_pro_scenario(book_title, author, event_info, feedback=None):
 
     chat = client.chats.create(model="gemini-3.5-flash-lite")
     response = chat.send_message(prompt)
-    
+
     text = response.text.strip()
     if text.startswith("```json"):
         text = text[7:]
@@ -171,6 +177,7 @@ def generate_pro_scenario(book_title, author, event_info, feedback=None):
             "intent": "역사적 수난 속에서 우리말과 글을 지켜낸 선조들의 노력 부각",
             "target": "한글날의 의미를 새기고 싶은 독자",
             "tone": "진정성 있고 감동적인 톤",
+            "accent_color": "#38bdf8",
             "slide_count": 4,
             "slides": [
                 {
@@ -203,9 +210,13 @@ def generate_pro_scenario(book_title, author, event_info, feedback=None):
     return data
 
 # ----------------------------------------------------
-# 5. HTML/CSS 기반 전문 디자인 템플릿 생성 엔진
+# 5. HTML/CSS 기반 전문 디자인 템플릿 엔진 (레이아웃 다양화 버전)
+#    - 슬라이드 타입별 2~3개 그리드 패턴을 순환 배치
+#    - 페이지 인디케이터 / 시리즈 브랜드마크 추가
+#    - accent_color 주입으로 도서마다 다른 포인트 컬러
 # ----------------------------------------------------
-def build_html_template(slide, book_title, author, cover_url, bg_url):
+def build_html_template(slide, book_title, author, cover_url, bg_url, accent_color="#38bdf8",
+                         slide_num=1, total_slides=1, series_name="HUDDLING BOOKS"):
     s_type = slide.get("type", "detail")
     head = slide.get("head_copy", "")
     sub = slide.get("sub_copy", "")
@@ -214,6 +225,7 @@ def build_html_template(slide, book_title, author, cover_url, bg_url):
     css_common = f"""
     @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css');
     * {{ box-sizing: border-box; margin: 0; padding: 0; font-family: 'Pretendard', sans-serif; }}
+    :root {{ --accent: {accent_color}; }}
     body {{ width: 1080px; height: 1350px; overflow: hidden; background: #0f172a; position: relative; }}
     .bg-image {{
         position: absolute; width: 100%; height: 100%;
@@ -225,94 +237,268 @@ def build_html_template(slide, book_title, author, cover_url, bg_url):
         position: absolute; width: 100%; height: 100%;
         background: linear-gradient(180deg, rgba(15,23,42,0.3) 0%, rgba(15,23,42,0.88) 100%);
     }}
-    .container {{
-        position: relative; z-index: 10; width: 100%; height: 100%;
-        padding: 90px 75px; display: flex; flex-direction: column;
-        justify-content: center; align-items: center; color: #fff; text-align: center;
+    .brand-mark {{
+        position: absolute; top: 56px; left: 60px; z-index: 20;
+        font-size: 20px; font-weight: 700; letter-spacing: 0.08em;
+        color: rgba(255,255,255,0.55); text-transform: uppercase;
     }}
+    .page-indicator {{
+        position: absolute; bottom: 56px; right: 60px; z-index: 20;
+        font-size: 22px; font-weight: 700; color: rgba(255,255,255,0.6);
+        display: flex; align-items: baseline; gap: 4px;
+    }}
+    .page-indicator .current {{ color: var(--accent); font-size: 30px; }}
     .glass-card {{
         background: rgba(255, 255, 255, 0.07); backdrop-filter: blur(20px);
         border: 1px solid rgba(255, 255, 255, 0.16); border-radius: 36px;
-        box-shadow: 0 30px 60px rgba(0,0,0,0.5); width: 100%; padding: 60px 50px;
+        box-shadow: 0 30px 60px rgba(0,0,0,0.5);
     }}
     """
 
+    brand_html = f'<div class="brand-mark">{series_name}</div>'
+    page_html = (
+        f'<div class="page-indicator"><span class="current">{slide_num}</span>'
+        f'<span>/ {total_slides}</span></div>'
+    )
+
+    # ---------------------------------------------------------
+    # COVER: 2가지 패턴 순환 (중앙 집중형 / 좌우 분할 에디토리얼형)
+    # ---------------------------------------------------------
     if s_type == "cover":
+        variant = slide_num % 2
         cover_img_html = f'<img src="{cover_url}" class="book-cover">' if cover_url else ''
-        html = f"""
-        <!DOCTYPE html><html><head><style>{css_common}
-        .book-cover {{
-            width: 390px; height: 550px; object-fit: cover; border-radius: 20px;
-            box-shadow: 0 30px 60px rgba(0,0,0,0.8); border: 1px solid rgba(255,255,255,0.25);
-            margin-bottom: 40px;
-        }}
-        .head-title {{ font-size: 52px; font-weight: 800; color: #ffffff; line-height: 1.35; word-break: keep-all; text-shadow: 0 4px 20px rgba(0,0,0,0.6); }}
-        .sub-title {{ font-size: 28px; color: #cbd5e1; font-weight: 500; margin-top: 24px; word-break: keep-all; line-height: 1.4; }}
-        .book-meta {{ font-size: 24px; color: #94a3b8; font-weight: 600; margin-top: 36px; }}
-        </style></head><body>
-        <div class="bg-image"></div><div class="overlay"></div>
-        <div class="container">
-            {cover_img_html}
-            <div class="head-title">{head}</div>
-            <div class="sub-title">{sub}</div>
-            <div class="book-meta">《{book_title}》 {author} 저</div>
-        </div></body></html>
-        """
+
+        if variant == 0:
+            html = f"""
+            <!DOCTYPE html><html><head><style>{css_common}
+            .container {{
+                position: relative; z-index: 10; width: 100%; height: 100%;
+                padding: 90px 75px; display: flex; flex-direction: column;
+                justify-content: center; align-items: center; color: #fff; text-align: center;
+            }}
+            .book-cover {{
+                width: 380px; height: 540px; object-fit: cover; border-radius: 16px;
+                box-shadow: 0 30px 60px rgba(0,0,0,0.8); border: 1px solid rgba(255,255,255,0.25);
+                margin-bottom: 36px;
+            }}
+            .accent-line {{ width: 56px; height: 5px; background: var(--accent); border-radius: 3px; margin-bottom: 28px; }}
+            .head-title {{ font-size: 52px; font-weight: 800; color: #ffffff; line-height: 1.35; letter-spacing: -0.02em; word-break: keep-all; text-shadow: 0 4px 20px rgba(0,0,0,0.6); }}
+            .sub-title {{ font-size: 27px; color: #cbd5e1; font-weight: 500; margin-top: 22px; word-break: keep-all; line-height: 1.4; }}
+            .book-meta {{ font-size: 22px; color: var(--accent); font-weight: 700; margin-top: 32px; letter-spacing: 0.02em; }}
+            </style></head><body>
+            <div class="bg-image"></div><div class="overlay"></div>
+            {brand_html}{page_html}
+            <div class="container">
+                {cover_img_html}
+                <div class="accent-line"></div>
+                <div class="head-title">{head}</div>
+                <div class="sub-title">{sub}</div>
+                <div class="book-meta">《{book_title}》 {author} 저</div>
+            </div></body></html>
+            """
+        else:
+            html = f"""
+            <!DOCTYPE html><html><head><style>{css_common}
+            .container {{
+                position: relative; z-index: 10; width: 100%; height: 100%;
+                display: flex; align-items: center; padding: 0 70px; color: #fff;
+            }}
+            .left-col {{ flex: 1.1; text-align: left; padding-right: 40px; }}
+            .right-col {{ flex: 0.9; display: flex; justify-content: center; }}
+            .book-cover {{
+                width: 340px; height: 480px; object-fit: cover; border-radius: 14px;
+                box-shadow: 0 30px 70px rgba(0,0,0,0.85); border: 1px solid rgba(255,255,255,0.2);
+                transform: rotate(2.5deg);
+            }}
+            .accent-bar-v {{ width: 6px; height: 90px; background: var(--accent); border-radius: 4px; margin-bottom: 24px; }}
+            .head-title {{ font-size: 50px; font-weight: 800; color: #fff; line-height: 1.3; letter-spacing: -0.02em; word-break: keep-all; }}
+            .sub-title {{ font-size: 25px; color: #cbd5e1; font-weight: 500; margin-top: 20px; line-height: 1.5; word-break: keep-all; }}
+            .book-meta {{ font-size: 20px; color: var(--accent); font-weight: 700; margin-top: 30px; }}
+            </style></head><body>
+            <div class="bg-image"></div><div class="overlay"></div>
+            {brand_html}{page_html}
+            <div class="container">
+                <div class="left-col">
+                    <div class="accent-bar-v"></div>
+                    <div class="head-title">{head}</div>
+                    <div class="sub-title">{sub}</div>
+                    <div class="book-meta">《{book_title}》 {author} 저</div>
+                </div>
+                <div class="right-col">{cover_img_html}</div>
+            </div></body></html>
+            """
+
+    # ---------------------------------------------------------
+    # QUOTE: 2가지 패턴 (글래스카드형 / 배경 위 대형 타이포 노카드형)
+    # ---------------------------------------------------------
     elif s_type == "quote":
-        html = f"""
-        <!DOCTYPE html><html><head><style>{css_common}
-        .quote-icon {{ font-size: 140px; color: #38bdf8; opacity: 0.8; font-family: Georgia, serif; line-height: 0.8; margin-bottom: 20px; }}
-        .quote-text {{ font-size: 54px; font-weight: 800; color: #ffffff; line-height: 1.4; word-break: keep-all; margin-bottom: 30px; text-shadow: 0 4px 20px rgba(0,0,0,0.5); }}
-        .quote-sub {{ font-size: 28px; color: #cbd5e1; font-weight: 500; word-break: keep-all; line-height: 1.5; }}
-        </style></head><body>
-        <div class="bg-image"></div><div class="overlay"></div>
-        <div class="container">
-            <div class="glass-card">
-                <div class="quote-icon">“</div>
+        variant = slide_num % 2
+        if variant == 0:
+            html = f"""
+            <!DOCTYPE html><html><head><style>{css_common}
+            .container {{
+                position: relative; z-index: 10; width: 100%; height: 100%;
+                padding: 90px 75px; display: flex; flex-direction: column;
+                justify-content: center; align-items: center; color: #fff; text-align: center;
+            }}
+            .glass-card {{ padding: 64px 52px; width: 100%; }}
+            .quote-icon {{ font-size: 130px; color: var(--accent); opacity: 0.85; font-family: Georgia, serif; line-height: 0.7; margin-bottom: 16px; }}
+            .quote-text {{ font-size: 52px; font-weight: 800; color: #ffffff; line-height: 1.4; letter-spacing: -0.01em; word-break: keep-all; margin-bottom: 26px; }}
+            .quote-sub {{ font-size: 27px; color: #cbd5e1; font-weight: 500; word-break: keep-all; line-height: 1.5; }}
+            </style></head><body>
+            <div class="bg-image"></div><div class="overlay"></div>
+            {brand_html}{page_html}
+            <div class="container">
+                <div class="glass-card">
+                    <div class="quote-icon">&ldquo;</div>
+                    <div class="quote-text">{head}</div>
+                    <div class="quote-sub">{body}</div>
+                </div>
+            </div></body></html>
+            """
+        else:
+            html = f"""
+            <!DOCTYPE html><html><head><style>{css_common}
+            .container {{
+                position: relative; z-index: 10; width: 100%; height: 100%;
+                padding: 140px 80px; display: flex; flex-direction: column;
+                justify-content: center; color: #fff; text-align: left;
+            }}
+            .quote-mark {{ font-size: 100px; color: var(--accent); font-family: Georgia, serif; line-height: 0.6; margin-bottom: 8px; }}
+            .quote-text {{ font-size: 58px; font-weight: 800; color: #ffffff; line-height: 1.35; letter-spacing: -0.02em; word-break: keep-all; text-shadow: 0 6px 24px rgba(0,0,0,0.6); }}
+            .divider {{ width: 100%; height: 1px; background: rgba(255,255,255,0.2); margin: 36px 0; }}
+            .quote-sub {{ font-size: 26px; color: #cbd5e1; font-weight: 500; word-break: keep-all; line-height: 1.6; }}
+            </style></head><body>
+            <div class="bg-image"></div><div class="overlay"></div>
+            {brand_html}{page_html}
+            <div class="container">
+                <div class="quote-mark">&ldquo;</div>
                 <div class="quote-text">{head}</div>
+                <div class="divider"></div>
                 <div class="quote-sub">{body}</div>
-            </div>
-        </div></body></html>
-        """
+            </div></body></html>
+            """
+
+    # ---------------------------------------------------------
+    # CTA: 화이트 카드 고정, accent 컬러만 주입
+    # ---------------------------------------------------------
     elif s_type == "cta":
         html = f"""
         <!DOCTYPE html><html><head><style>{css_common}
-        .cta-box {{ background: #ffffff; border-radius: 36px; padding: 70px 50px; color: #0f172a; box-shadow: 0 30px 60px rgba(0,0,0,0.4); width: 100%; }}
-        .cta-head {{ font-size: 48px; font-weight: 800; color: #0f172a; line-height: 1.35; margin-bottom: 30px; word-break: keep-all; }}
-        .cta-sub {{ font-size: 30px; font-weight: 600; color: #334155; line-height: 1.5; word-break: keep-all; margin-bottom: 40px; }}
-        .cta-footer {{ font-size: 24px; font-weight: 700; color: #0284c7; background: #e0f2fe; padding: 20px 30px; border-radius: 50px; display: inline-block; }}
+        .container {{
+            position: relative; z-index: 10; width: 100%; height: 100%;
+            padding: 90px 75px; display: flex; flex-direction: column;
+            justify-content: center; align-items: center; color: #fff; text-align: center;
+        }}
+        .cta-box {{ background: #ffffff; border-radius: 32px; padding: 68px 50px; color: #0f172a; box-shadow: 0 30px 70px rgba(0,0,0,0.45); width: 100%; }}
+        .cta-accent {{ width: 56px; height: 5px; background: var(--accent); border-radius: 3px; margin: 0 auto 28px; }}
+        .cta-head {{ font-size: 46px; font-weight: 800; color: #0f172a; line-height: 1.35; letter-spacing: -0.02em; margin-bottom: 26px; word-break: keep-all; }}
+        .cta-sub {{ font-size: 28px; font-weight: 600; color: #334155; line-height: 1.55; word-break: keep-all; margin-bottom: 36px; }}
+        .cta-footer {{ font-size: 22px; font-weight: 700; color: var(--accent); background: rgba(56,189,248,0.12); padding: 18px 28px; border-radius: 50px; display: inline-block; }}
         </style></head><body>
         <div class="bg-image"></div><div class="overlay"></div>
+        {brand_html}{page_html}
         <div class="container">
             <div class="cta-box">
+                <div class="cta-accent"></div>
                 <div class="cta-head">{head}</div>
                 <div class="cta-sub">{sub}</div>
                 <div class="cta-footer">전국 온·오프라인 서점에서 만나보실 수 있습니다</div>
             </div>
         </div></body></html>
         """
-    else: # detail / background
-        html = f"""
-        <!DOCTYPE html><html><head><style>{css_common}
-        .detail-head {{ font-size: 46px; font-weight: 800; color: #ffffff; margin-bottom: 40px; line-height: 1.35; word-break: keep-all; text-shadow: 0 4px 15px rgba(0,0,0,0.5); }}
-        .detail-body {{ font-size: 30px; font-weight: 500; color: #f1f5f9; line-height: 1.7; word-break: keep-all; text-align: left; }}
-        </style></head><body>
-        <div class="bg-image"></div><div class="overlay"></div>
-        <div class="container">
-            <div class="detail-head">{head}</div>
-            <div class="glass-card">
+
+    # ---------------------------------------------------------
+    # DETAIL / 기타: 3가지 패턴 순환 (좌측정렬 카드형 / 넘버링 강조형 / 풀블리드 여백형)
+    # ---------------------------------------------------------
+    else:
+        variant = slide_num % 3
+        if variant == 0:
+            html = f"""
+            <!DOCTYPE html><html><head><style>{css_common}
+            .container {{
+                position: relative; z-index: 10; width: 100%; height: 100%;
+                padding: 100px 75px; display: flex; flex-direction: column;
+                justify-content: center; color: #fff;
+            }}
+            .detail-head {{ font-size: 44px; font-weight: 800; color: #ffffff; margin-bottom: 36px; line-height: 1.35; letter-spacing: -0.02em; word-break: keep-all; text-align: left; }}
+            .glass-card {{ padding: 52px 44px; }}
+            .detail-body {{ font-size: 29px; font-weight: 500; color: #f1f5f9; line-height: 1.75; word-break: keep-all; text-align: left; }}
+            </style></head><body>
+            <div class="bg-image"></div><div class="overlay"></div>
+            {brand_html}{page_html}
+            <div class="container">
+                <div class="detail-head">{head}</div>
+                <div class="glass-card"><div class="detail-body">{body}</div></div>
+            </div></body></html>
+            """
+        elif variant == 1:
+            html = f"""
+            <!DOCTYPE html><html><head><style>{css_common}
+            .container {{
+                position: relative; z-index: 10; width: 100%; height: 100%;
+                display: flex; padding: 100px 70px; color: #fff; align-items: center;
+            }}
+            .num-col {{ flex: 0 0 200px; }}
+            .big-num {{ font-size: 220px; font-weight: 800; color: var(--accent); opacity: 0.35; line-height: 1; font-family: Georgia, serif; }}
+            .text-col {{ flex: 1; text-align: left; }}
+            .detail-head {{ font-size: 42px; font-weight: 800; color: #ffffff; margin-bottom: 30px; line-height: 1.35; letter-spacing: -0.02em; word-break: keep-all; }}
+            .detail-body {{ font-size: 28px; font-weight: 500; color: #f1f5f9; line-height: 1.75; word-break: keep-all; }}
+            </style></head><body>
+            <div class="bg-image"></div><div class="overlay"></div>
+            {brand_html}{page_html}
+            <div class="container">
+                <div class="num-col"><div class="big-num">{slide_num:02d}</div></div>
+                <div class="text-col">
+                    <div class="detail-head">{head}</div>
+                    <div class="detail-body">{body}</div>
+                </div>
+            </div></body></html>
+            """
+        else:
+            html = f"""
+            <!DOCTYPE html><html><head><style>{css_common}
+            .container {{
+                position: relative; z-index: 10; width: 100%; height: 100%;
+                padding: 120px 90px; display: flex; flex-direction: column;
+                justify-content: flex-end; color: #fff;
+            }}
+            .accent-dot {{ width: 14px; height: 14px; border-radius: 50%; background: var(--accent); margin-bottom: 24px; }}
+            .detail-head {{ font-size: 46px; font-weight: 800; color: #ffffff; margin-bottom: 28px; line-height: 1.4; letter-spacing: -0.02em; word-break: keep-all; }}
+            .detail-body {{ font-size: 27px; font-weight: 500; color: #cbd5e1; line-height: 1.8; word-break: keep-all; }}
+            </style></head><body>
+            <div class="bg-image"></div><div class="overlay"></div>
+            {brand_html}{page_html}
+            <div class="container">
+                <div class="accent-dot"></div>
+                <div class="detail-head">{head}</div>
                 <div class="detail-body">{body}</div>
-            </div>
-        </div></body></html>
-        """
+            </div></body></html>
+            """
+
     return html
 
 # ----------------------------------------------------
-# 5. 메모리 최적화 및 타임아웃 안전 장치가 반영된 렌더링 함수
+# 6. 메모리 최적화 + 타임아웃 안전장치 + 해상도/배경 다양화 반영 렌더링 함수
 # ----------------------------------------------------
 async def render_html_to_images(book_title, author, scenario_data, cover_url):
-    bg_url = get_unsplash_bg_url("history,book,library")
     slides = scenario_data.get("slides", [])
+    total = len(slides)
+    accent_color = scenario_data.get("accent_color", "#38bdf8")
+
+    # 슬라이드 타입별로 배경을 다르게 (기존: 전체 공통 1장 → 개선: 타입별 개별 호출 + 캐싱)
+    bg_keywords = {
+        "cover": f"{book_title},book,atmosphere",
+        "quote": "paper,texture,minimal,light",
+        "detail": "library,archive,vintage",
+        "cta": "bookstore,shelf,warm light",
+    }
+    bg_cache = {}
+    def get_bg(s_type):
+        if s_type not in bg_cache:
+            bg_cache[s_type] = get_unsplash_bg_url(bg_keywords.get(s_type, "books,library"))
+        return bg_cache[s_type]
+
     img_paths = []
 
     async with async_playwright() as p:
@@ -327,16 +513,26 @@ async def render_html_to_images(book_title, author, scenario_data, cover_url):
                 "--single-process"
             ]
         )
-        context = await browser.new_context(viewport={"width": 1080, "height": 1350})
+        context = await browser.new_context(
+            viewport={"width": 1080, "height": 1350},
+            device_scale_factor=2,  # 해상도 2배 → 텍스트/엣지 선명도 대폭 개선
+        )
         page = await context.new_page()
 
         for idx, slide in enumerate(slides, start=1):
             try:
-                html_content = build_html_template(slide, book_title, author, cover_url, bg_url)
+                s_type = slide.get("type", "detail")
+                bg_url = get_bg(s_type)
+                html_content = build_html_template(
+                    slide, book_title, author, cover_url, bg_url,
+                    accent_color=accent_color,
+                    slide_num=idx,
+                    total_slides=total,
+                )
                 # 최대 10초 대기 시간 제한 설정
                 await page.set_content(html_content, timeout=10000)
-                await page.wait_for_timeout(200) # 스타일 렌더링 완료 대기
-                
+                await page.wait_for_timeout(200)  # 스타일 렌더링 완료 대기
+
                 output_path = f"card_{idx}.png"
                 await page.screenshot(path=output_path, timeout=10000)
                 img_paths.append(output_path)
@@ -349,18 +545,18 @@ async def render_html_to_images(book_title, author, scenario_data, cover_url):
     return img_paths
 
 # ----------------------------------------------------
-# 6. 텔레그램 핸들러
+# 7. 텔레그램 핸들러
 # ----------------------------------------------------
 async def start_draft(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
-    
+
     event_data = get_pending_event_from_sheet()
     if not event_data:
         await context.bot.send_message(chat_id=chat_id, text="📌 현재 처리할 [Pending] 상태의 도서 정보가 없습니다.")
         return ConversationHandler.END
 
     user_drafts[chat_id] = event_data
-    
+
     await context.bot.send_message(chat_id=chat_id, text="🧠 전문 기획 마케터 톤으로 가변 카드뉴스 시나리오 및 포스팅 초안을 기획 중입니다...")
 
     scenario_data = generate_pro_scenario(event_data["book_title"], event_data["author"], event_data["event_info"])
@@ -410,11 +606,11 @@ async def handle_scenario_action(update: Update, context: ContextTypes.DEFAULT_T
         data = user_drafts[chat_id]
         scenario = data["scenario"]
         slide_count = len(scenario.get("slides", []))
-        
+
         await query.edit_message_text(text=f"🎨 HTML/CSS 엔진으로 고화질 카드뉴스 이미지 {slide_count}장을 생성 중입니다. 잠시만 기다려 주세요...")
-        
+
         img_paths = await render_html_to_images(data["book_title"], data["author"], scenario, data["cover_url"])
-        
+
         if img_paths:
             media = [InputMediaPhoto(media=open(p, "rb")) for p in img_paths]
             await context.bot.send_media_group(chat_id=chat_id, media=media)
