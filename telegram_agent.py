@@ -113,7 +113,7 @@ def create_card_news(book_title, event_info, cover_url=None, output_path="cardne
     return output_path
 
 # ----------------------------------------------------
-# 4. Gemini 문구 생성
+# 4. Gemini 문구 생성 (글자 수 제약 추가)
 # ----------------------------------------------------
 def generate_draft(book_title, author, event_info, feedback=None):
     prompt = f"""
@@ -121,9 +121,11 @@ def generate_draft(book_title, author, event_info, feedback=None):
     - 도서명: {book_title}
     - 저자: {author}
     - 이벤트 내용: {event_info}
+    
+    [주의사항]: 텔레그램 메세지 길이 제한을 준수하기 위해 해시태그 포함 전체 문구 길이는 800자 이내로 간결하고 매력적으로 작성해줘.
     """
     if feedback:
-        prompt += f"\n\n[사용자 수정 요청사항]: {feedback}\n위 요구사항을 적극 반영해서 재생성해줘."
+        prompt += f"\n\n[사용자 수정 요청사항]: {feedback}\n위 요구사항을 적극 반영해서 800자 이내로 재생성해줘."
 
     response = client.models.generate_content(
         model="gemini-3.5-flash-lite",
@@ -132,7 +134,7 @@ def generate_draft(book_title, author, event_info, feedback=None):
     return response.text
 
 # ----------------------------------------------------
-# 5. 텔레그램 대화 핸들러
+# 5. 텔레그램 대화 핸들러 (캡션 안전 자르기 적용)
 # ----------------------------------------------------
 async def start_draft(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -157,11 +159,16 @@ async def start_draft(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
+    # 캡션 길이가 텔레그램 이미지 캡션 제한(1024자)을 넘지 않도록 안전 자르기
+    caption_text = f"📌 **[도서 포스팅 초안 검토 요청]**\n\n{draft_text}"
+    if len(caption_text) > 1000:
+        caption_text = caption_text[:990] + "...\n(글자 수 제한으로 일부 생략)"
+
     with open(img_path, "rb") as photo:
         await context.bot.send_photo(
             chat_id=chat_id,
             photo=photo,
-            caption=f"📌 **[도서 포스팅 초안 검토 요청]**\n\n{draft_text}",
+            caption=caption_text,
             parse_mode="Markdown",
             reply_markup=reply_markup
         )
@@ -178,14 +185,25 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ws = user_drafts[chat_id]["worksheet"]
             ws.update_cell(row_idx, 5, "Done")
 
+        # 캡션 자르기 안전 적용
+        base_caption = query.message.caption or ""
+        approved_caption = f"{base_caption}\n\n✅ **[승인 완료]** 포스팅이 승인되었으며 시트 상태가 'Done'으로 변경되었습니다!"
+        if len(approved_caption) > 1024:
+            approved_caption = approved_caption[:1000] + "..."
+
         await query.edit_message_caption(
-            caption=f"{query.message.caption}\n\n✅ **[승인 완료]** 포스팅이 승인되었으며 시트 상태가 'Done'으로 변경되었습니다!"
+            caption=approved_caption
         )
         return ConversationHandler.END
 
     elif query.data == "request_edit":
+        base_caption = query.message.caption or ""
+        request_caption = f"{base_caption}\n\n✏️ **[수정 요청]** 수정 사항을 메시지로 입력해 주세요."
+        if len(request_caption) > 1024:
+            request_caption = request_caption[:1000] + "..."
+
         await query.edit_message_caption(
-            caption=f"{query.message.caption}\n\n✏️ **[수정 요청]** 수정 사항을 메시지로 입력해 주세요."
+            caption=request_caption
         )
         return WAITING_FOR_FEEDBACK
 
@@ -209,18 +227,21 @@ async def receive_feedback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
+    caption_text = f"📌 **[수정된 포스팅 초안]**\n\n{new_draft}"
+    if len(caption_text) > 1000:
+        caption_text = caption_text[:990] + "...\n(글자 수 제한으로 일부 생략)"
+
     with open(img_path, "rb") as photo:
         await context.bot.send_photo(
             chat_id=chat_id,
             photo=photo,
-            caption=f"📌 **[수정된 포스팅 초안]**\n\n{new_draft}",
+            caption=caption_text,
             parse_mode="Markdown",
             reply_markup=reply_markup
         )
     return ConversationHandler.END
 
 def main():
-    # 백그라운드 웹서버 쓰레드 실행 (Render 배포 통과용)
     threading.Thread(target=run_flask, daemon=True).start()
 
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
