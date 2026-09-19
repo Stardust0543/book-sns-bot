@@ -307,25 +307,45 @@ def build_html_template(slide, book_title, author, cover_url, bg_url):
         """
     return html
 
+# ----------------------------------------------------
+# 5. 메모리 최적화 및 타임아웃 안전 장치가 반영된 렌더링 함수
+# ----------------------------------------------------
 async def render_html_to_images(book_title, author, scenario_data, cover_url):
     bg_url = get_unsplash_bg_url("history,book,library")
     slides = scenario_data.get("slides", [])
     img_paths = []
 
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        page = await browser.new_page(viewport={"width": 1080, "height": 1350})
+        # Render 무료 플랜 메모리(512MB) 초과 방지 옵션 적용
+        browser = await p.chromium.launch(
+            headless=True,
+            args=[
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+                "--single-process"
+            ]
+        )
+        context = await browser.new_context(viewport={"width": 1080, "height": 1350})
+        page = await context.new_page()
 
         for idx, slide in enumerate(slides, start=1):
-            html_content = build_html_template(slide, book_title, author, cover_url, bg_url)
-            await page.set_content(html_content)
-            await page.wait_for_timeout(300)
-            
-            output_path = f"card_{idx}.png"
-            await page.screenshot(path=output_path)
-            img_paths.append(output_path)
+            try:
+                html_content = build_html_template(slide, book_title, author, cover_url, bg_url)
+                # 최대 10초 대기 시간 제한 설정
+                await page.set_content(html_content, timeout=10000)
+                await page.wait_for_timeout(200) # 스타일 렌더링 완료 대기
+                
+                output_path = f"card_{idx}.png"
+                await page.screenshot(path=output_path, timeout=10000)
+                img_paths.append(output_path)
+            except Exception as e:
+                logging.error(f"Slide {idx} 렌더링 에러/타임아웃 발생: {e}")
 
+        await context.close()
         await browser.close()
+
     return img_paths
 
 # ----------------------------------------------------
@@ -395,17 +415,21 @@ async def handle_scenario_action(update: Update, context: ContextTypes.DEFAULT_T
         
         img_paths = await render_html_to_images(data["book_title"], data["author"], scenario, data["cover_url"])
         
-        media = [InputMediaPhoto(media=open(p, "rb")) for p in img_paths]
-        await context.bot.send_media_group(chat_id=chat_id, media=media)
+        if img_paths:
+            media = [InputMediaPhoto(media=open(p, "rb")) for p in img_paths]
+            await context.bot.send_media_group(chat_id=chat_id, media=media)
 
-        keyboard = [
-            [
-                InlineKeyboardButton("✅ 최종 포스팅 완료 (Done 처리)", callback_data="final_done"),
+            keyboard = [
+                [
+                    InlineKeyboardButton("✅ 최종 포스팅 완료 (Done 처리)", callback_data="final_done"),
+                ]
             ]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await context.bot.send_message(chat_id=chat_id, text=f"📸 생성된 {slide_count}장 카드뉴스 이미지 팩입니다. 검토 후 완료 버튼을 눌러주세요.", reply_markup=reply_markup)
-        return WAITING_FINAL_APPROVAL
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await context.bot.send_message(chat_id=chat_id, text=f"📸 생성된 {len(img_paths)}장 카드뉴스 이미지 팩입니다. 검토 후 완료 버튼을 눌러주세요.", reply_markup=reply_markup)
+            return WAITING_FINAL_APPROVAL
+        else:
+            await context.bot.send_message(chat_id=chat_id, text="⚠️ 이미지 렌더링 중 오류가 발생했습니다. 다시 시도해 주세요.")
+            return WAITING_SCENARIO_ACTION
 
     elif query.data == "edit_scenario":
         await query.edit_message_text(text="✏️ **[시나리오 수정]** 보완할 시나리오 방향이나 피드백을 메시지로 입력해 주세요.")
