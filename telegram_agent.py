@@ -2,9 +2,10 @@ import os
 import json
 import logging
 import threading
+import warnings
 import requests
 from io import BytesIO
-from PIL import Image, ImageDraw, ImageFont, ImageEnhance
+from PIL import Image, ImageDraw, ImageFont
 from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
 from telegram.ext import (
@@ -18,6 +19,9 @@ from telegram.ext import (
 )
 import gspread
 from google import genai
+
+# SDK 경고 메시지 로깅 억제
+warnings.filterwarnings("ignore", category=UserWarning, module="google_genai")
 
 # ----------------------------------------------------
 # 0. Render 포트 스캔 대응용 미니 웹서버
@@ -67,7 +71,6 @@ def get_font(size):
 # 2. Unsplash 무료 고화질 실사 이미지 가져오기
 # ----------------------------------------------------
 def get_free_stock_image(keyword="reading"):
-    """Unsplash API를 이용해 검색 키워드에 맞는 무료 고화질 이미지를 다운로드합니다."""
     try:
         if UNSPLASH_ACCESS_KEY:
             url = f"https://api.unsplash.com/photos/random?query={keyword}&orientation=squarish&client_id={UNSPLASH_ACCESS_KEY}"
@@ -79,7 +82,6 @@ def get_free_stock_image(keyword="reading"):
     except Exception as e:
         logging.error(f"Unsplash 이미지 로드 실패: {e}")
 
-    # API 키가 없거나 실패 시 대체용 감성 이미지
     fallback_url = "https://picsum.photos/1080/1080"
     res = requests.get(fallback_url, timeout=5)
     return Image.open(BytesIO(res.content)).convert("RGBA")
@@ -129,7 +131,6 @@ def create_card_news_pack(book_title, author, event_info, cover_url=None):
     font_sub = get_font(36)
     font_body = get_font(30)
 
-    # 책 표지 다운로드
     cover_img = None
     if cover_url and cover_url.startswith("http"):
         try:
@@ -138,13 +139,11 @@ def create_card_news_pack(book_title, author, event_info, cover_url=None):
         except Exception as e:
             logging.error(f"표지 다운로드 실패: {e}")
 
-    # 키워드 기반 실사 배경 이미지 가져오기
     bg_img = get_free_stock_image("book,library,reading")
     bg_img = bg_img.resize((canvas_w, canvas_h))
 
-    # ===== 1장: 메인 표지 + 실사 감성 배경 =====
+    # 1장: 메인 표지 + 실사 감성 배경
     c1 = bg_img.copy()
-    # 어두운 반투명 오버레이 (가독성 확보)
     overlay1 = Image.new("RGBA", (canvas_w, canvas_h), (0, 0, 0, 140))
     c1 = Image.alpha_composite(c1, overlay1)
     d1 = ImageDraw.Draw(c1)
@@ -168,16 +167,15 @@ def create_card_news_pack(book_title, author, event_info, cover_url=None):
     c1.convert("RGB").save(p1_path, "PNG")
     image_paths.append(p1_path)
 
-    # ===== 2장: 홍보 핵심 내용 / 저자 이야기 (실사 모던 블러 스타일) =====
+    # 2장: 홍보 핵심 내용 / 저자 이야기
     c2 = bg_img.copy()
-    overlay2 = Image.new("RGBA", (canvas_w, canvas_h), (15, 23, 42, 210)) # 딥 네이비 오버레이
+    overlay2 = Image.new("RGBA", (canvas_w, canvas_h), (15, 23, 42, 210))
     c2 = Image.alpha_composite(c2, overlay2)
     d2 = ImageDraw.Draw(c2)
 
     d2.text((canvas_w / 2, 160), "BOOK HIGHLIGHT", font=font_sub, fill=(56, 189, 248), anchor="mm")
     d2.text((canvas_w / 2, 250), f"《{book_title}》", font=font_title, fill=(255, 255, 255), anchor="mm")
 
-    # 유리 질감의 콘텐츠 카트
     d2.rounded_rectangle([100, 360, canvas_w-100, 820], radius=24, fill=(255, 255, 255, 25), outline=(255, 255, 255, 60), width=2)
     d2.text((canvas_w / 2, 450), "📌 이 책의 핵심 홍보 포인트", font=font_sub, fill=(255, 255, 255), anchor="mm")
     d2.text((canvas_w / 2, 590), event_info, font=font_body, fill=(226, 232, 240), anchor="mm")
@@ -186,11 +184,10 @@ def create_card_news_pack(book_title, author, event_info, cover_url=None):
     c2.convert("RGB").save(p2_path, "PNG")
     image_paths.append(p2_path)
 
-    # ===== 3장: 안내 & CTA (클린 카드 스타일) =====
+    # 3장: 안내 & CTA
     c3 = Image.new("RGBA", (canvas_w, canvas_h), (248, 250, 252))
     d3 = ImageDraw.Draw(c3)
 
-    # 상단 3/5 부분에 실사 이미지 매칭
     header_bg = bg_img.crop((0, 0, canvas_w, 450))
     overlay3 = Image.new("RGBA", (canvas_w, 450), (0, 0, 0, 100))
     header_bg = Image.alpha_composite(header_bg, overlay3)
@@ -199,11 +196,9 @@ def create_card_news_pack(book_title, author, event_info, cover_url=None):
     d3.text((canvas_w / 2, 200), f"《{book_title}》", font=font_title, fill=(255, 255, 255), anchor="mm")
     d3.text((canvas_w / 2, 290), event_info, font=font_sub, fill=(226, 232, 240), anchor="mm")
 
-    # 하단 액션 카드
     d3.rounded_rectangle([120, 520, canvas_w-120, 880], radius=30, fill=(255, 255, 255), outline=(226, 232, 240), width=2)
     d3.text((canvas_w / 2, 620), "📖 지금 온·오프라인 서점에서 만나보세요!", font=font_sub, fill=(30, 41, 59), anchor="mm")
     
-    # CTA 버튼
     d3.rounded_rectangle([200, 720, canvas_w-200, 820], radius=50, fill=(14, 165, 233))
     d3.text((canvas_w / 2, 770), "자세히 보기 & 구매하기 ➔", font=font_sub, fill=(255, 255, 255), anchor="mm")
 
@@ -214,7 +209,7 @@ def create_card_news_pack(book_title, author, event_info, cover_url=None):
     return image_paths
 
 # ----------------------------------------------------
-# 5. Gemini 홍보 목적별 맞춤 문구 생성
+# 5. Gemini 홍보 목적별 맞춤 문구 생성 (권장 Chat API 적용)
 # ----------------------------------------------------
 def generate_draft(book_title, author, event_info, feedback=None):
     prompt = f"""
@@ -232,10 +227,10 @@ def generate_draft(book_title, author, event_info, feedback=None):
     if feedback:
         prompt += f"\n\n[사용자 수정 요청사항]: {feedback}\n위 요구사항을 적극 반영해서 800자 이내로 재생성해줘."
 
-    response = client.models.generate_content(
-        model="gemini-3.5-flash-lite",
-        contents=prompt
-    )
+    # Chat API 호출 방식으로 변경하여 SDK 경고 제거
+    chat = client.chats.create(model="gemini-3.5-flash-lite")
+    response = chat.send_message(prompt)
+    
     return response.text
 
 # ----------------------------------------------------
