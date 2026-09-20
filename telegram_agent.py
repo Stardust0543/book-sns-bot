@@ -85,6 +85,32 @@ ICON_LIBRARY = {
     "flag", "target", "rocket", "globe", "lightbulb", "map-pin", "clock",
 }
 
+# 슬라이드 "타입"별로 실제 화면을 짜는 방식(구성/그리드) 목록.
+# 예전에는 slide_num % N 으로 기계적으로 순환시켰지만, 이제는 Gemini가 그 슬라이드의
+# 실제 내용(텍스트 길이, 톤, 강조하고 싶은 포인트)에 맞춰 layout 값을 직접 고르게 해서
+# "슬라이드 타입"이 아니라 "슬라이드 내용"에 맞는 시각적 구성이 나오도록 함.
+# 각 값에 대한 설명은 생성 프롬프트에 그대로 노출되어 Gemini가 언제 어떤 걸
+# 골라야 하는지 판단하는 기준이 됨.
+LAYOUT_LIBRARY = {
+    "cover": {
+        "center": "표지를 화면 중앙에 크게 두고 제목/부제를 그 아래 중앙정렬로 배치. 임팩트 있는 한 문장 카피에 어울림.",
+        "split": "왼쪽에 카피, 오른쪽에 살짝 기울어진 표지를 배치하는 에디토리얼 분할형. 카피가 길거나 설명적일 때 어울림.",
+    },
+    "quote": {
+        "card": "반투명 유리질감 카드 안에 인용구를 중앙정렬로 담음. 짧고 여운이 있는 인용구에 어울림.",
+        "bold": "카드 없이 배경 위에 초대형 타이포로 인용구를 좌측정렬 노출. 강렬하고 선언적인 문장에 어울림.",
+    },
+    "detail": {
+        "leftalign": "제목 아래 반투명 카드에 본문을 담는 차분한 구성. 설명이 길고 정보 전달이 중요할 때.",
+        "numbered": "큰 숫자(슬라이드 번호)를 왼쪽에 장식으로 두고 오른쪽에 제목/본문. 목록/단계/포인트를 나열하는 내용에 어울림.",
+        "bottom": "화면 하단에 텍스트를 몰아서 배치하고 위쪽은 배경 이미지를 넓게 보여주는 여백형. 장면/분위기를 강조하고 싶을 때.",
+    },
+    "cta": {
+        "boxed": "흰색 카드 박스 안에 메시지와 CTA를 담는 깔끔하고 신뢰감 있는 구성.",
+        "banner": "카드 없이 배경 이미지를 가득 채우고 하단에 포인트 컬러 리본 배너로 메시지를 강조하는 임팩트형.",
+    },
+}
+
 # ----------------------------------------------------
 # 2. Unsplash 감성 스톡 이미지 URL 가져오기
 #    (무료 티어 시간당 50회 제한 보호용 1회 재시도 + 짧은 백오프)
@@ -257,6 +283,19 @@ def generate_pro_scenario(book_title, author, event_info, feedback=None):
       megaphone, sparkles, trophy, compass, scale, flame, shield, star, heart, flag,
       target, rocket, globe, lightbulb, map-pin, clock. 슬라이드마다 다르게 고를 것.
 
+    ⚠️ 매우 중요 (시각적 구성): 단순히 배경 사진만 바뀌는 게 아니라, 화면을 "어떻게 짤지"
+    자체도 슬라이드마다 그 내용에 맞춰 직접 골라줘. 아래는 슬라이드 타입(type)별로 고를 수
+    있는 layout 값과 각각이 어떤 내용에 어울리는지 설명이야. 반드시 그 슬라이드의 type에
+    해당하는 목록 안에서만 골라야 해:
+    """
+    for s_type, options in LAYOUT_LIBRARY.items():
+        prompt += f"\n    [type=\"{s_type}\"]\n"
+        for name, desc in options.items():
+            prompt += f'      - "{name}": {desc}\n'
+    prompt += """
+    같은 카드뉴스 안에서 같은 type이 여러 번 나오더라도(예: detail 슬라이드가 2장),
+    내용이 다르면 layout도 가능하면 다르게 골라서 화면이 반복되어 보이지 않게 해줘.
+
     반드시 아래 JSON 포맷으로만 응답해줘. 다른 설명 없이 순수 JSON 텍스트만 반환해.
 
     {
@@ -269,6 +308,7 @@ def generate_pro_scenario(book_title, author, event_info, feedback=None):
         {
           "slide_num": 1,
           "type": "cover",
+          "layout": "[type=\\"cover\\"] 목록(center/split) 중 이 카피에 맞는 것 1개",
           "badge": "짧은 캠페인/날짜 태그 (예: 10월 9일 한글날, 신간 출간, 이 주의 추천 등 5~12자)",
           "head_copy": "메인 카피 (강렬한 질문/화두)",
           "sub_copy": "서브 카피",
@@ -278,6 +318,7 @@ def generate_pro_scenario(book_title, author, event_info, feedback=None):
         {
           "slide_num": 2,
           "type": "quote",
+          "layout": "[type=\\"quote\\"] 목록(card/bold) 중 이 인용구에 맞는 것 1개",
           "head_copy": "가슴을 울리는 책 속 한 구절 또는 인용구",
           "body": "부연 설명",
           "image_keyword": "이 인용구의 장면/소재에 맞는 영어 검색어",
@@ -286,6 +327,7 @@ def generate_pro_scenario(book_title, author, event_info, feedback=None):
         {
           "slide_num": 3,
           "type": "detail",
+          "layout": "[type=\\"detail\\"] 목록(leftalign/numbered/bottom) 중 이 스토리에 맞는 것 1개",
           "head_copy": "핵심 배경/스토리",
           "body": "본문 설명 (줄바꿈 포함 가능)",
           "image_keyword": "이 스토리의 구체적 장면/소재에 맞는 영어 검색어",
@@ -294,6 +336,7 @@ def generate_pro_scenario(book_title, author, event_info, feedback=None):
         {
           "slide_num": 4,
           "type": "cta",
+          "layout": "[type=\\"cta\\"] 목록(boxed/banner) 중 마무리 분위기에 맞는 것 1개",
           "head_copy": "메인 카피 (도서 메시지 & CTA)",
           "sub_copy": "하단 안내 문구",
           "image_keyword": "마무리 분위기에 맞는 영어 검색어",
@@ -327,6 +370,7 @@ def generate_pro_scenario(book_title, author, event_info, feedback=None):
                 {
                     "slide_num": 1,
                     "type": "cover",
+                    "layout": "center",
                     "badge": "10월 9일 한글날",
                     "head_copy": "“만약 일제강점기에 우리말과 글이 완전히 사라졌다면?”",
                     "sub_copy": "우리가 세종대왕 뒤에 꼭 기억해야 할 또 다른 영웅들의 이야기.",
@@ -336,6 +380,7 @@ def generate_pro_scenario(book_title, author, event_info, feedback=None):
                 {
                     "slide_num": 2,
                     "type": "quote",
+                    "layout": "bold",
                     "head_copy": "“말은 민족의 정신이요, 글은 민족의 생명이다”",
                     "body": "수많은 학자들이 희생당하면서도 끝까지 지켜낸 것은 바로 '우리의 정체성'이었습니다.",
                     "image_keyword": "old handwritten letter ink",
@@ -344,6 +389,7 @@ def generate_pro_scenario(book_title, author, event_info, feedback=None):
                 {
                     "slide_num": 3,
                     "type": "detail",
+                    "layout": "leftalign",
                     "head_copy": "오늘 당연하게 쓰는 한글, 당연하게 지켜진 것은 없습니다.",
                     "body": "세종대왕의 애민정신부터 독립운동가들의 피와 땀까지.\n역사는 매일 읽고 쓰는 이 글자 하나하나에 살아 숨 쉬고 있습니다.",
                     "image_keyword": "independence movement archive photo",
@@ -352,6 +398,7 @@ def generate_pro_scenario(book_title, author, event_info, feedback=None):
                 {
                     "slide_num": 4,
                     "type": "cta",
+                    "layout": "boxed",
                     "head_copy": "더 깊이 알고, 끝까지 기억해야 할 우리 역사 이야기",
                     "sub_copy": "📘 《우리가 지켜야 할 한국사》\n전국 온·오프라인 서점에서 만나보세요.",
                     "image_keyword": "bookstore warm light shelf",
@@ -395,6 +442,19 @@ def build_html_template(slide, book_title, author, cover_url, bg_url, accent_col
     # 비전 QA에서 결함(텍스트 잘림/겹침)이 발견된 슬라이드를 1회 재렌더링할 때
     # 모든 요소를 중앙 기준으로 살짝 축소해서 여백을 확보하는 안전장치
     shrink_rule = ".container { transform: scale(0.86); transform-origin: center center; }" if shrink else ""
+
+    # Gemini가 시나리오 단계에서 슬라이드 "내용"에 맞춰 직접 고른 시각적 구성(layout).
+    # LAYOUT_LIBRARY에 없는 값이거나 비어있으면(구버전 데이터, 파싱 실패 등) 예전처럼
+    # slide_num 기반 순환으로 안전하게 폴백 — 항상 유효한 화면이 나오도록 보장.
+    layout_choice = slide.get("layout", "").strip().lower()
+    valid_layouts = list(LAYOUT_LIBRARY.get(s_type, {}).keys())
+    if layout_choice not in valid_layouts:
+        layout_choice = ""
+
+    def pick_variant(options_in_order, modulo_fallback):
+        if layout_choice and layout_choice in options_in_order:
+            return options_in_order.index(layout_choice)
+        return modulo_fallback
 
     css_common = f"""
     @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css');
@@ -492,7 +552,7 @@ def build_html_template(slide, book_title, author, cover_url, bg_url, accent_col
     # COVER: 2가지 패턴 순환 (중앙 집중형 / 좌우 분할 에디토리얼형)
     # ---------------------------------------------------------
     if s_type == "cover":
-        variant = slide_num % 2
+        variant = pick_variant(["center", "split"], slide_num % 2)
         cover_img_html = f'<img src="{cover_url}" class="book-cover">' if cover_url else ''
 
         if variant == 0:
@@ -559,7 +619,7 @@ def build_html_template(slide, book_title, author, cover_url, bg_url, accent_col
     # QUOTE: 2가지 패턴 (글래스카드형 / 배경 위 대형 타이포 노카드형)
     # ---------------------------------------------------------
     elif s_type == "quote":
-        variant = slide_num % 2
+        variant = pick_variant(["card", "bold"], slide_num % 2)
         if variant == 0:
             html = f"""
             <!DOCTYPE html><html><head><style>{css_common}
@@ -610,36 +670,65 @@ def build_html_template(slide, book_title, author, cover_url, bg_url, accent_col
     # CTA: 화이트 카드 고정, accent 컬러만 주입
     # ---------------------------------------------------------
     elif s_type == "cta":
-        html = f"""
-        <!DOCTYPE html><html><head><style>{css_common}
-        .container {{
-            position: relative; z-index: 10; width: 100%; height: 100%;
-            padding: 90px 75px; display: flex; flex-direction: column;
-            justify-content: center; align-items: center; color: #fff; text-align: center;
-        }}
-        .cta-box {{ background: #ffffff; border-radius: 32px; padding: 68px 50px; color: #0f172a; box-shadow: 0 30px 70px rgba(0,0,0,0.45); width: 100%; }}
-        .cta-accent {{ width: 56px; height: 5px; background: var(--accent); border-radius: 3px; margin: 0 auto 28px; }}
-        .cta-head {{ font-size: 46px; font-weight: 800; color: #0f172a; line-height: 1.35; letter-spacing: -0.02em; margin-bottom: 26px; word-break: keep-all; }}
-        .cta-sub {{ font-size: 28px; font-weight: 600; color: #334155; line-height: 1.55; word-break: keep-all; margin-bottom: 36px; }}
-        .cta-footer {{ font-size: 22px; font-weight: 700; color: var(--accent); background: rgba(56,189,248,0.12); padding: 18px 28px; border-radius: 50px; display: inline-block; }}
-        </style></head><body>
-        {deco_html}
-        {brand_html}{page_html}
-        <div class="container">
-            <div class="cta-box">
-                <div class="cta-accent"></div>
-                <div class="cta-head">{head}</div>
-                <div class="cta-sub">{sub}</div>
-                <div class="cta-footer">전국 온·오프라인 서점에서 만나보실 수 있습니다</div>
-            </div>
-        </div></body></html>
-        """
+        variant = pick_variant(["boxed", "banner"], 0)
+        if variant == 0:
+            html = f"""
+            <!DOCTYPE html><html><head><style>{css_common}
+            .container {{
+                position: relative; z-index: 10; width: 100%; height: 100%;
+                padding: 90px 75px; display: flex; flex-direction: column;
+                justify-content: center; align-items: center; color: #fff; text-align: center;
+            }}
+            .cta-box {{ background: #ffffff; border-radius: 32px; padding: 68px 50px; color: #0f172a; box-shadow: 0 30px 70px rgba(0,0,0,0.45); width: 100%; }}
+            .cta-accent {{ width: 56px; height: 5px; background: var(--accent); border-radius: 3px; margin: 0 auto 28px; }}
+            .cta-head {{ font-size: 46px; font-weight: 800; color: #0f172a; line-height: 1.35; letter-spacing: -0.02em; margin-bottom: 26px; word-break: keep-all; }}
+            .cta-sub {{ font-size: 28px; font-weight: 600; color: #334155; line-height: 1.55; word-break: keep-all; margin-bottom: 36px; }}
+            .cta-footer {{ font-size: 22px; font-weight: 700; color: var(--accent); background: rgba(56,189,248,0.12); padding: 18px 28px; border-radius: 50px; display: inline-block; }}
+            </style></head><body>
+            {deco_html}
+            {brand_html}{page_html}
+            <div class="container">
+                <div class="cta-box">
+                    <div class="cta-accent"></div>
+                    <div class="cta-head">{head}</div>
+                    <div class="cta-sub">{sub}</div>
+                    <div class="cta-footer">전국 온·오프라인 서점에서 만나보실 수 있습니다</div>
+                </div>
+            </div></body></html>
+            """
+        else:
+            # banner: 카드 없이 배경 이미지를 그대로 드러내고 하단에 포인트 컬러 리본
+            # 배너로 메시지를 강조하는 임팩트형 — boxed와 달리 사진 자체가 주인공이 됨.
+            html = f"""
+            <!DOCTYPE html><html><head><style>{css_common}
+            .container {{
+                position: relative; z-index: 10; width: 100%; height: 100%;
+                display: flex; flex-direction: column; justify-content: flex-end;
+            }}
+            .cta-banner {{
+                background: var(--accent); color: #0b1220; padding: 56px 70px 64px;
+                box-shadow: 0 -20px 50px rgba(0,0,0,0.35);
+            }}
+            .cta-head {{ font-size: 44px; font-weight: 800; line-height: 1.35; letter-spacing: -0.02em; margin-bottom: 18px; word-break: keep-all; }}
+            .cta-sub {{ font-size: 25px; font-weight: 600; line-height: 1.5; word-break: keep-all; opacity: 0.85; margin-bottom: 22px; }}
+            .cta-footer {{ font-size: 20px; font-weight: 700; color: #0b1220; background: rgba(11,18,32,0.12); padding: 14px 24px; border-radius: 50px; display: inline-block; }}
+            </style></head><body>
+            {deco_html}
+            {brand_html}{page_html}
+            <div class="container">
+                <div class="cta-banner">
+                    <div class="cta-head">{head}</div>
+                    <div class="cta-sub">{sub}</div>
+                    <div class="cta-footer">전국 온·오프라인 서점에서 만나보실 수 있습니다</div>
+                </div>
+            </div></body></html>
+            """
 
     # ---------------------------------------------------------
     # DETAIL / 기타: 3가지 패턴 순환 (좌측정렬 카드형 / 넘버링 강조형 / 풀블리드 여백형)
     # ---------------------------------------------------------
     else:
-        variant = slide_num % 3
+        variant = pick_variant(["leftalign", "numbered", "bottom"], slide_num % 3)
         if variant == 0:
             html = f"""
             <!DOCTYPE html><html><head><style>{css_common}
