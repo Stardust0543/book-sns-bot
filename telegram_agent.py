@@ -1,5 +1,6 @@
 import os
 import json
+import base64
 import logging
 import threading
 import warnings
@@ -18,6 +19,7 @@ from telegram.ext import (
 )
 import gspread
 from google import genai
+from google.genai import types
 from playwright.async_api import async_playwright
 
 warnings.filterwarnings("ignore", category=UserWarning, module="google_genai")
@@ -51,6 +53,18 @@ IG_ACCESS_TOKEN = os.environ.get("IG_ACCESS_TOKEN")
 IG_USER_ID = os.environ.get("IG_USER_ID")
 GRAPH_API_VERSION = "v21.0"
 
+# ---- Gemini 이미지 생성 (무료: 같은 GEMINI_API_KEY, Google AI Studio 무료 티어 기준 하루 약 500장) ----
+# Unsplash 랜덤 검색 대신 슬라이드 내용에 맞춘 맞춤 배경을 직접 생성.
+# 실패하거나 쿼터 초과 시 자동으로 Unsplash 검색으로 폴백하므로 안전함.
+GEMINI_IMAGE_MODEL = os.environ.get("GEMINI_IMAGE_MODEL", "gemini-2.5-flash-image")
+AI_BACKGROUND_ENABLED = os.environ.get("AI_BACKGROUND_ENABLED", "true").lower() != "false"
+
+# ---- 비전(Vision) QA 검수 (무료: 같은 GEMINI_API_KEY) ----
+# 렌더링된 스크린샷을 텍스트 생성용과 별개로 멀티모달 모델에게 보여주고
+# 텍스트 잘림/겹침 등 육안 문제를 검수. 문제 발견 시 1회 축소 재렌더링.
+GEMINI_VISION_MODEL = os.environ.get("GEMINI_VISION_MODEL", "gemini-2.5-flash")
+VISION_QA_ENABLED = os.environ.get("VISION_QA_ENABLED", "true").lower() != "false"
+
 client = genai.Client(api_key=GEMINI_API_KEY)
 logging.basicConfig(level=logging.INFO)
 
@@ -59,6 +73,15 @@ WAITING_SCENARIO_FEEDBACK = 2
 WAITING_FINAL_APPROVAL = 3
 
 user_drafts = {}
+
+# 슬라이드 장식용으로 쓸 수 있는 무료 오픈소스 아이콘 세트 (Lucide, MIT 라이선스).
+# Gemini는 이 목록 안에서만 icon 값을 고르도록 프롬프트에서 지시받음 —
+# 목록 밖 값이 오면 build_html_template()에서 자동으로 무시됨(빈 값 처리).
+ICON_LIBRARY = {
+    "book-open", "feather", "quote", "landmark", "megaphone", "sparkles",
+    "trophy", "compass", "scale", "flame", "shield", "star", "heart",
+    "flag", "target", "rocket", "globe", "lightbulb", "map-pin", "clock",
+}
 
 # ----------------------------------------------------
 # 2. Unsplash 감성 스톡 이미지 URL 가져오기
@@ -91,6 +114,76 @@ def get_unsplash_bg_url(keyword="history,book,library"):
                 time.sleep(0.5)
 
     return "https://images.unsplash.com/photo-1457369804613-52c61a468e7d?auto=format&fit=crop&w=1080&q=80"
+
+# ----------------------------------------------------
+# 2-1. Gemini 이미지 생성 — 슬라이드 내용에 맞춘 맞춤 배경 아트
+#      (Unsplash 랜덤 스톡사진 대신 사용. 실패 시 호출부에서 Unsplash로 폴백)
+# ----------------------------------------------------
+def generate_ai_background(image_keyword, accent_color):
+    if not AI_BACKGROUND_ENABLED or not image_keyword:
+        return None
+    try:
+        prompt = (
+            f"A tasteful editorial background image for a Korean book-marketing social "
+            f"media card. Subject/scene: {image_keyword}. Cinematic, muted and slightly "
+            f"desaturated tones that will work underneath a {accent_color} color-tint "
+            f"overlay and white text. No text, no watermark, no logo, no people's faces "
+            f"close-up. Leave clear negative space (top or bottom third) for text overlay. "
+            f"Professional magazine-quality photography or illustration, portrait orientation."
+        )
+        response = client.models.generate_content(
+            model=GEMINI_IMAGE_MODEL,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_modalities=["IMAGE"],
+                image_config=types.ImageConfig(aspect_ratio="4:5"),  # 1080x1350과 동일 비율
+            ),
+        )
+        for part in response.parts:
+            inline = getattr(part, "inline_data", None)
+            if inline and inline.data:
+                raw = inline.data
+                mime = inline.mime_type or "image/png"
+                # SDK 버전에 따라 raw bytes로 오거나 이미 base64 문자열로 올 수 있어 둘 다 처리
+                if isinstance(raw, (bytes, bytearray)):
+                    b64 = base64.b64encode(raw).decode("ascii")
+                else:
+                    b64 = raw
+                return f"data:{mime};base64,{b64}"
+    except Exception as e:
+        logging.error(f"Gemini 이미지 생성 실패, Unsplash로 폴백: {e}")
+    return None
+
+# ----------------------------------------------------
+# 2-2. 비전(Vision) QA 검수 — 렌더링 결과물을 멀티모달로 육안 검수
+#      (검수 자체가 실패하면 파이프라인을 막지 않도록 항상 통과 처리)
+# ----------------------------------------------------
+def vision_qa_check(image_path):
+    if not VISION_QA_ENABLED:
+        return True, ""
+    try:
+        with open(image_path, "rb") as f:
+            image_bytes = f.read()
+        response = client.models.generate_content(
+            model=GEMINI_VISION_MODEL,
+            contents=[
+                types.Part.from_bytes(data=image_bytes, mime_type="image/png"),
+                "이 이미지는 인스타그램 카드뉴스 슬라이드야. 텍스트가 화면 밖으로 잘렸거나, "
+                "다른 요소와 심하게 겹치거나, 가독성이 크게 떨어지는 명백한 문제가 있으면 "
+                "'FAIL: <한 줄 이유>' 형식으로만 답해. 그런 문제가 없으면 'OK'라고만 답해. "
+                "사소한 미학적 취향 차이는 문제로 보지 말고, 명백한 결함만 지적해.",
+            ],
+        )
+        text = (response.text or "").strip()
+        if text.upper().startswith("OK"):
+            return True, ""
+        logging.warning(f"비전 QA 결함 발견: {text}")
+        return False, text
+    except Exception as e:
+        # 검수 실패는 렌더링 실패가 아니므로 통과 처리 — QA는 있으면 좋은 안전장치일 뿐,
+        # 이것 때문에 전체 파이프라인이 멈추면 안 됨
+        logging.error(f"비전 QA 검수 자체가 실패함(통과 처리): {e}")
+        return True, ""
 
 # ----------------------------------------------------
 # 3. 구글 시트 연동
@@ -157,7 +250,10 @@ def generate_pro_scenario(book_title, author, event_info, feedback=None):
     - "image_keyword": 그 슬라이드 내용에 맞는 Unsplash 검색어 (영어 2~4단어, 쉼표로 구분,
       예: "korean hanbok texture", "old newspaper archive", "night city lights").
       슬라이드마다 서로 다른 장면/소재를 검색하도록 다양하게 지정할 것.
-    - "icon": 그 슬라이드 내용과 어울리는 이모지 1개 (예: 📜, ⚔️, 🕊️, 💡). 슬라이드마다 다르게.
+    - "icon": 아래 목록 중 그 슬라이드 내용과 가장 잘 어울리는 것 하나를 영문 이름 그대로
+      정확히 적어줘 (다른 단어로 바꾸지 말 것): book-open, feather, quote, landmark,
+      megaphone, sparkles, trophy, compass, scale, flame, shield, star, heart, flag,
+      target, rocket, globe, lightbulb, map-pin, clock. 슬라이드마다 다르게 고를 것.
 
     반드시 아래 JSON 포맷으로만 응답해줘. 다른 설명 없이 순수 JSON 텍스트만 반환해.
 
@@ -175,7 +271,7 @@ def generate_pro_scenario(book_title, author, event_info, feedback=None):
           "head_copy": "메인 카피 (강렬한 질문/화두)",
           "sub_copy": "서브 카피",
           "image_keyword": "이 슬라이드 내용에 맞는 영어 Unsplash 검색어",
-          "icon": "이 슬라이드 내용과 어울리는 이모지 1개"
+          "icon": "ICON_LIBRARY 목록 중 이 슬라이드 내용에 맞는 이름 1개"
         },
         {
           "slide_num": 2,
@@ -183,7 +279,7 @@ def generate_pro_scenario(book_title, author, event_info, feedback=None):
           "head_copy": "가슴을 울리는 책 속 한 구절 또는 인용구",
           "body": "부연 설명",
           "image_keyword": "이 인용구의 장면/소재에 맞는 영어 검색어",
-          "icon": "이 인용구와 어울리는 이모지 1개"
+          "icon": "ICON_LIBRARY 목록 중 이 인용구에 맞는 이름 1개"
         },
         {
           "slide_num": 3,
@@ -191,7 +287,7 @@ def generate_pro_scenario(book_title, author, event_info, feedback=None):
           "head_copy": "핵심 배경/스토리",
           "body": "본문 설명 (줄바꿈 포함 가능)",
           "image_keyword": "이 스토리의 구체적 장면/소재에 맞는 영어 검색어",
-          "icon": "이 스토리와 어울리는 이모지 1개"
+          "icon": "ICON_LIBRARY 목록 중 이 스토리에 맞는 이름 1개"
         },
         {
           "slide_num": 4,
@@ -199,7 +295,7 @@ def generate_pro_scenario(book_title, author, event_info, feedback=None):
           "head_copy": "메인 카피 (도서 메시지 & CTA)",
           "sub_copy": "하단 안내 문구",
           "image_keyword": "마무리 분위기에 맞는 영어 검색어",
-          "icon": "마무리 분위기와 어울리는 이모지 1개"
+          "icon": "ICON_LIBRARY 목록 중 마무리 분위기에 맞는 이름 1개"
         }
       ],
       "caption": "인스타그램 본문 텍스트 (줄바꿈, 이모지, 본문글, 해시태그 포함 600자 이내)"
@@ -233,7 +329,7 @@ def generate_pro_scenario(book_title, author, event_info, feedback=None):
                     "head_copy": "“만약 일제강점기에 우리말과 글이 완전히 사라졌다면?”",
                     "sub_copy": "우리가 세종대왕 뒤에 꼭 기억해야 할 또 다른 영웅들의 이야기.",
                     "image_keyword": "korean hanbok traditional texture",
-                    "icon": "📜"
+                    "icon": "landmark"
                 },
                 {
                     "slide_num": 2,
@@ -241,7 +337,7 @@ def generate_pro_scenario(book_title, author, event_info, feedback=None):
                     "head_copy": "“말은 민족의 정신이요, 글은 민족의 생명이다”",
                     "body": "수많은 학자들이 희생당하면서도 끝까지 지켜낸 것은 바로 '우리의 정체성'이었습니다.",
                     "image_keyword": "old handwritten letter ink",
-                    "icon": "✒️"
+                    "icon": "feather"
                 },
                 {
                     "slide_num": 3,
@@ -249,7 +345,7 @@ def generate_pro_scenario(book_title, author, event_info, feedback=None):
                     "head_copy": "오늘 당연하게 쓰는 한글, 당연하게 지켜진 것은 없습니다.",
                     "body": "세종대왕의 애민정신부터 독립운동가들의 피와 땀까지.\n역사는 매일 읽고 쓰는 이 글자 하나하나에 살아 숨 쉬고 있습니다.",
                     "image_keyword": "independence movement archive photo",
-                    "icon": "✊"
+                    "icon": "flag"
                 },
                 {
                     "slide_num": 4,
@@ -257,7 +353,7 @@ def generate_pro_scenario(book_title, author, event_info, feedback=None):
                     "head_copy": "더 깊이 알고, 끝까지 기억해야 할 우리 역사 이야기",
                     "sub_copy": "📘 《우리가 지켜야 할 한국사》\n전국 온·오프라인 서점에서 만나보세요.",
                     "image_keyword": "bookstore warm light shelf",
-                    "icon": "📚"
+                    "icon": "book-open"
                 }
             ],
             "caption": f"🇰🇷 《{book_title}》\n저자: {author}\n\n{event_info}\n\n#한글날 #우리가지켜야할한국사 #한국사 #책스타그램 #허들링북스"
@@ -271,17 +367,32 @@ def generate_pro_scenario(book_title, author, event_info, feedback=None):
 #    - accent_color 주입으로 도서마다 다른 포인트 컬러
 # ----------------------------------------------------
 def build_html_template(slide, book_title, author, cover_url, bg_url, accent_color="#38bdf8",
-                         slide_num=1, total_slides=1, series_name="HUDDLING BOOKS"):
+                         slide_num=1, total_slides=1, series_name="HUDDLING BOOKS", shrink=False):
     s_type = slide.get("type", "detail")
     head = slide.get("head_copy", "")
     sub = slide.get("sub_copy", "")
     body = slide.get("body", "").replace("\n", "<br>")
     badge = slide.get("badge", "").strip()
     badge_html = f'<div class="tag-badge">{badge}</div>' if badge else ""
-    icon = slide.get("icon", "").strip()
-    # 슬라이드 내용에 맞는 이모지를 우측 상단에 크게, 옅게 띄워서 슬라이드마다
-    # 시각적으로 구분되는 "포인트"를 만듦 (같은 레이아웃이어도 슬라이드마다 달라 보이게)
-    icon_html = f'<div class="deco-icon">{icon}</div>' if icon else ""
+
+    # 슬라이드 내용에 맞는 무료 오픈소스 아이콘(Lucide, MIT 라이선스)을 우측 상단에
+    # 옅게 띄워서 슬라이드마다 시각적 포인트를 만듦. 이모지 대신 SVG를 CSS mask-image로
+    # 얹는 방식이라 플랫폼에 상관없이 항상 동일하고 정제된 모양으로 나옴.
+    icon_name = slide.get("icon", "").strip().lower()
+    if icon_name not in ICON_LIBRARY:
+        icon_name = ""
+    icon_html = ""
+    if icon_name:
+        icon_url = f"https://cdn.jsdelivr.net/npm/lucide-static@latest/icons/{icon_name}.svg"
+        icon_html = (
+            f'<div class="deco-icon" style="'
+            f"-webkit-mask-image:url('{icon_url}'); mask-image:url('{icon_url}');"
+            f'"></div>'
+        )
+
+    # 비전 QA에서 결함(텍스트 잘림/겹침)이 발견된 슬라이드를 1회 재렌더링할 때
+    # 모든 요소를 중앙 기준으로 살짝 축소해서 여백을 확보하는 안전장치
+    shrink_rule = ".container { transform: scale(0.86); transform-origin: center center; }" if shrink else ""
 
     css_common = f"""
     @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css');
@@ -348,10 +459,15 @@ def build_html_template(slide, book_title, author, cover_url, bg_url, accent_col
         font-size: 21px; letter-spacing: -0.01em; margin-bottom: 24px;
     }}
     .deco-icon {{
-        position: absolute; top: 64px; right: 70px; z-index: 2;
-        font-size: 120px; opacity: 0.22; line-height: 1;
-        filter: drop-shadow(0 8px 20px rgba(0,0,0,0.4));
+        position: absolute; top: 60px; right: 66px; z-index: 2;
+        width: 130px; height: 130px;
+        -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat;
+        -webkit-mask-size: contain; mask-size: contain;
+        -webkit-mask-position: center; mask-position: center;
+        background-color: rgba(255,255,255,0.32);
+        filter: drop-shadow(0 8px 20px rgba(0,0,0,0.35));
     }}
+    {shrink_rule}
     """
 
     orb_pos = "pos-a" if slide_num % 2 == 0 else "pos-b"
@@ -611,8 +727,12 @@ async def render_html_to_images(book_title, author, scenario_data, cover_url):
         keyword = (slide.get("image_keyword") or "").strip()
         if not keyword:
             keyword = type_fallback_keywords.get(slide.get("type", "detail"), "books,library")
-        if keyword not in bg_cache:
-            bg_cache[keyword] = get_unsplash_bg_url(keyword)
+        if keyword in bg_cache:
+            return bg_cache[keyword]
+
+        # 1순위: Gemini가 이 키워드에 맞춰 직접 그린 맞춤 배경 (무료 티어 하루 약 500장)
+        ai_bg = generate_ai_background(keyword, accent_color)
+        bg_cache[keyword] = ai_bg if ai_bg else get_unsplash_bg_url(keyword)
         return bg_cache[keyword]
 
     img_paths = []
@@ -655,6 +775,28 @@ async def render_html_to_images(book_title, author, scenario_data, cover_url):
 
                 output_path = f"card_{idx}.png"
                 await page.screenshot(path=output_path, timeout=10000)
+
+                # 비전 QA: 실제로 렌더링된 결과물을 멀티모달로 육안 검수.
+                # 명백한 결함(텍스트 잘림/겹침)이 발견되면 전체 요소를 살짝 축소해서
+                # 딱 1번만 재렌더링 (무한 루프 방지, 검수 자체 실패는 통과 처리)
+                ok, issue = vision_qa_check(output_path)
+                if not ok:
+                    logging.warning(f"Slide {idx} 비전 QA 결함으로 축소 재렌더링: {issue}")
+                    retry_html = build_html_template(
+                        slide, book_title, author, cover_url, bg_url,
+                        accent_color=accent_color,
+                        slide_num=idx,
+                        total_slides=total,
+                        shrink=True,
+                    )
+                    await page.set_content(retry_html, timeout=10000)
+                    try:
+                        await page.evaluate("document.fonts.ready")
+                        await page.wait_for_function("document.fonts.status === 'loaded'", timeout=3000)
+                    except Exception:
+                        await page.wait_for_timeout(300)
+                    await page.screenshot(path=output_path, timeout=10000)
+
                 img_paths.append(output_path)
             except Exception as e:
                 logging.error(f"Slide {idx} 렌더링 에러/타임아웃 발생: {e}")
