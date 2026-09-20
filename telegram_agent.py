@@ -53,11 +53,13 @@ IG_ACCESS_TOKEN = os.environ.get("IG_ACCESS_TOKEN")
 IG_USER_ID = os.environ.get("IG_USER_ID")
 GRAPH_API_VERSION = "v21.0"
 
-# ---- Gemini 이미지 생성 (무료: 같은 GEMINI_API_KEY, Google AI Studio 무료 티어 기준 하루 약 500장) ----
-# Unsplash 랜덤 검색 대신 슬라이드 내용에 맞춘 맞춤 배경을 직접 생성.
-# 실패하거나 쿼터 초과 시 자동으로 Unsplash 검색으로 폴백하므로 안전함.
+# ---- Gemini 이미지 생성 (일부 계정만 무료; 이 프로젝트 API 키는 무료 티어 한도가 0으로 확인됨) ----
+# Unsplash 랜덤 검색 대신 슬라이드 내용에 맞춘 맞춤 배경을 직접 생성하려는 기능이지만,
+# 계정마다 무료 이미지 생성 할당량이 다르고(0인 경우도 있음) 확인 전까지는 매번 429만
+# 받고 Unsplash로 폴백하며 시간을 낭비하므로, 기본값은 꺼둠. 본인 Google AI Studio에서
+# 무료 이미지 생성 한도가 있는 걸 직접 확인한 뒤에만 AI_BACKGROUND_ENABLED=true로 켤 것.
 GEMINI_IMAGE_MODEL = os.environ.get("GEMINI_IMAGE_MODEL", "gemini-2.5-flash-image")
-AI_BACKGROUND_ENABLED = os.environ.get("AI_BACKGROUND_ENABLED", "true").lower() != "false"
+AI_BACKGROUND_ENABLED = os.environ.get("AI_BACKGROUND_ENABLED", "false").lower() == "true"
 
 # ---- 비전(Vision) QA 검수 (무료: 같은 GEMINI_API_KEY) ----
 # 렌더링된 스크린샷을 텍스트 생성용과 별개로 멀티모달 모델에게 보여주고
