@@ -68,9 +68,19 @@ def get_unsplash_bg_url(keyword="history,book,library"):
     if UNSPLASH_ACCESS_KEY:
         for attempt in range(2):
             try:
-                url = f"https://api.unsplash.com/photos/random?query={keyword}&client_id={UNSPLASH_ACCESS_KEY}"
-                res = requests.get(url, timeout=5)
+                # params=로 넘겨서 requests가 공백/특수문자를 자동으로 URL 인코딩하게 함
+                # (Gemini가 만드는 image_keyword는 "korean hanbok texture"처럼 공백 포함 가능)
+                res = requests.get(
+                    "https://api.unsplash.com/photos/random",
+                    params={"query": keyword, "orientation": "portrait", "client_id": UNSPLASH_ACCESS_KEY},
+                    timeout=5,
+                )
                 if res.status_code == 200:
+                    # 듀오톤 처리 시 원본 해상도가 낮으면 색 번짐이 도드라지므로
+                    # regular(1080px) 대신 더 큰 사이즈를 명시적으로 요청
+                    raw_url = res.json()["urls"].get("raw")
+                    if raw_url:
+                        return f"{raw_url}&w=2000&fit=max&q=80"
                     return res.json()["urls"]["regular"]
                 if res.status_code == 429:
                     logging.warning("Unsplash 요청 한도 초과 — 기본 배경으로 대체")
@@ -137,6 +147,18 @@ def generate_pro_scenario(book_title, author, event_info, feedback=None):
     예: 역사/인문 → 톤 다운된 블루/브론즈 계열, 자기계발 → 밝은 하늘색/그린 계열, 에세이 → 웜톤 계열 등
     다크 배경 위에서도 잘 보이는 채도 높은 색을 선택해.
 
+    첫 번째 슬라이드(cover)에는 시선을 끄는 짧은 캠페인/날짜 태그(badge)를 반드시 넣어줘.
+    (예: "10월 9일 한글날", "이 주의 신간", "출간 기념 이벤트" 등, 5~12자 이내)
+
+    ⚠️ 매우 중요: 슬라이드마다 배경 사진과 포인트 아이콘이 절대 겹치지 않고 그 슬라이드의
+    구체적인 내용에 맞게 완전히 달라져야 해. "표지/인용구/본문/CTA" 같은 슬라이드 타입 단위로
+    뭉뚱그리지 말고, 각 슬라이드가 실제로 말하는 내용(등장 인물, 사건, 장소, 감정, 소재)을
+    반영해서 슬라이드마다 개별적으로 정해줘:
+    - "image_keyword": 그 슬라이드 내용에 맞는 Unsplash 검색어 (영어 2~4단어, 쉼표로 구분,
+      예: "korean hanbok texture", "old newspaper archive", "night city lights").
+      슬라이드마다 서로 다른 장면/소재를 검색하도록 다양하게 지정할 것.
+    - "icon": 그 슬라이드 내용과 어울리는 이모지 1개 (예: 📜, ⚔️, 🕊️, 💡). 슬라이드마다 다르게.
+
     반드시 아래 JSON 포맷으로만 응답해줘. 다른 설명 없이 순수 JSON 텍스트만 반환해.
 
     {
@@ -149,26 +171,35 @@ def generate_pro_scenario(book_title, author, event_info, feedback=None):
         {
           "slide_num": 1,
           "type": "cover",
+          "badge": "짧은 캠페인/날짜 태그 (예: 10월 9일 한글날, 신간 출간, 이 주의 추천 등 5~12자)",
           "head_copy": "메인 카피 (강렬한 질문/화두)",
-          "sub_copy": "서브 카피"
+          "sub_copy": "서브 카피",
+          "image_keyword": "이 슬라이드 내용에 맞는 영어 Unsplash 검색어",
+          "icon": "이 슬라이드 내용과 어울리는 이모지 1개"
         },
         {
           "slide_num": 2,
           "type": "quote",
           "head_copy": "가슴을 울리는 책 속 한 구절 또는 인용구",
-          "body": "부연 설명"
+          "body": "부연 설명",
+          "image_keyword": "이 인용구의 장면/소재에 맞는 영어 검색어",
+          "icon": "이 인용구와 어울리는 이모지 1개"
         },
         {
           "slide_num": 3,
           "type": "detail",
           "head_copy": "핵심 배경/스토리",
-          "body": "본문 설명 (줄바꿈 포함 가능)"
+          "body": "본문 설명 (줄바꿈 포함 가능)",
+          "image_keyword": "이 스토리의 구체적 장면/소재에 맞는 영어 검색어",
+          "icon": "이 스토리와 어울리는 이모지 1개"
         },
         {
           "slide_num": 4,
           "type": "cta",
           "head_copy": "메인 카피 (도서 메시지 & CTA)",
-          "sub_copy": "하단 안내 문구"
+          "sub_copy": "하단 안내 문구",
+          "image_keyword": "마무리 분위기에 맞는 영어 검색어",
+          "icon": "마무리 분위기와 어울리는 이모지 1개"
         }
       ],
       "caption": "인스타그램 본문 텍스트 (줄바꿈, 이모지, 본문글, 해시태그 포함 600자 이내)"
@@ -198,26 +229,35 @@ def generate_pro_scenario(book_title, author, event_info, feedback=None):
                 {
                     "slide_num": 1,
                     "type": "cover",
+                    "badge": "10월 9일 한글날",
                     "head_copy": "“만약 일제강점기에 우리말과 글이 완전히 사라졌다면?”",
-                    "sub_copy": "우리가 세종대왕 뒤에 꼭 기억해야 할 또 다른 영웅들의 이야기."
+                    "sub_copy": "우리가 세종대왕 뒤에 꼭 기억해야 할 또 다른 영웅들의 이야기.",
+                    "image_keyword": "korean hanbok traditional texture",
+                    "icon": "📜"
                 },
                 {
                     "slide_num": 2,
                     "type": "quote",
                     "head_copy": "“말은 민족의 정신이요, 글은 민족의 생명이다”",
-                    "body": "수많은 학자들이 희생당하면서도 끝까지 지켜낸 것은 바로 '우리의 정체성'이었습니다."
+                    "body": "수많은 학자들이 희생당하면서도 끝까지 지켜낸 것은 바로 '우리의 정체성'이었습니다.",
+                    "image_keyword": "old handwritten letter ink",
+                    "icon": "✒️"
                 },
                 {
                     "slide_num": 3,
                     "type": "detail",
                     "head_copy": "오늘 당연하게 쓰는 한글, 당연하게 지켜진 것은 없습니다.",
-                    "body": "세종대왕의 애민정신부터 독립운동가들의 피와 땀까지.\n역사는 매일 읽고 쓰는 이 글자 하나하나에 살아 숨 쉬고 있습니다."
+                    "body": "세종대왕의 애민정신부터 독립운동가들의 피와 땀까지.\n역사는 매일 읽고 쓰는 이 글자 하나하나에 살아 숨 쉬고 있습니다.",
+                    "image_keyword": "independence movement archive photo",
+                    "icon": "✊"
                 },
                 {
                     "slide_num": 4,
                     "type": "cta",
                     "head_copy": "더 깊이 알고, 끝까지 기억해야 할 우리 역사 이야기",
-                    "sub_copy": "📘 《우리가 지켜야 할 한국사》\n전국 온·오프라인 서점에서 만나보세요."
+                    "sub_copy": "📘 《우리가 지켜야 할 한국사》\n전국 온·오프라인 서점에서 만나보세요.",
+                    "image_keyword": "bookstore warm light shelf",
+                    "icon": "📚"
                 }
             ],
             "caption": f"🇰🇷 《{book_title}》\n저자: {author}\n\n{event_info}\n\n#한글날 #우리가지켜야할한국사 #한국사 #책스타그램 #허들링북스"
@@ -236,26 +276,60 @@ def build_html_template(slide, book_title, author, cover_url, bg_url, accent_col
     head = slide.get("head_copy", "")
     sub = slide.get("sub_copy", "")
     body = slide.get("body", "").replace("\n", "<br>")
+    badge = slide.get("badge", "").strip()
+    badge_html = f'<div class="tag-badge">{badge}</div>' if badge else ""
+    icon = slide.get("icon", "").strip()
+    # 슬라이드 내용에 맞는 이모지를 우측 상단에 크게, 옅게 띄워서 슬라이드마다
+    # 시각적으로 구분되는 "포인트"를 만듦 (같은 레이아웃이어도 슬라이드마다 달라 보이게)
+    icon_html = f'<div class="deco-icon">{icon}</div>' if icon else ""
 
     css_common = f"""
     @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css');
     * {{ box-sizing: border-box; margin: 0; padding: 0; font-family: 'Pretendard', sans-serif; }}
     :root {{ --accent: {accent_color}; }}
-    body {{ width: 1080px; height: 1350px; overflow: hidden; background: #0f172a; position: relative; }}
+    body {{ width: 1080px; height: 1350px; overflow: hidden; background: #0b1220; position: relative; }}
+
+    /* ---- 배경 이미지: 듀오톤 처리 ----
+       사진을 흑백+콘트라스트로 눌러둔 뒤(.bg-image), 위에 accent 컬러 그라데이션을
+       mix-blend-mode: color 로 얹어서(.duotone-layer) 어떤 스톡사진이 오더라도
+       항상 브랜드 컬러 톤의 "디자인된" 이미지처럼 보이게 만듦. 예전처럼 사진을
+       blur+brightness로 짓눌러 안 보이게 하는 대신, 사진의 명암/질감은 그대로 살리고
+       색감만 넘겨받는 방식이라 배경이 훨씬 입체적이고 풍성해짐. */
     .bg-image {{
         position: absolute; width: 100%; height: 100%;
         background-image: url('{bg_url}');
         background-size: cover; background-position: center;
-        filter: blur(8px) brightness(0.35); transform: scale(1.05);
+        filter: grayscale(1) contrast(1.2) brightness(0.7);
+        transform: scale(1.08);
     }}
-    .overlay {{
+    .duotone-layer {{
         position: absolute; width: 100%; height: 100%;
-        background: linear-gradient(180deg, rgba(15,23,42,0.3) 0%, rgba(15,23,42,0.88) 100%);
+        background: linear-gradient(150deg, var(--accent) 0%, #0b1220 78%);
+        mix-blend-mode: color;
     }}
+    .shade-layer {{
+        /* 텍스트 가독성을 위한 최소한의 음영 — 예전처럼 화면 전체를 덮어서
+           사진을 지워버리지 않고, 아래쪽으로만 자연스럽게 짙어짐 */
+        position: absolute; width: 100%; height: 100%;
+        background: linear-gradient(180deg, rgba(11,18,32,0.12) 0%, rgba(11,18,32,0.55) 60%, rgba(11,18,32,0.88) 100%);
+    }}
+
+    /* ---- 장식 요소: 빈 공간에 색과 입체감을 채워 "허공" 느낌 제거 ---- */
+    .top-bar {{
+        position: absolute; top: 0; left: 0; width: 100%; height: 14px;
+        background: var(--accent); z-index: 25;
+    }}
+    .deco-orb {{
+        position: absolute; width: 620px; height: 620px; border-radius: 50%;
+        background: var(--accent); opacity: 0.32; filter: blur(150px); z-index: 1;
+    }}
+    .deco-orb.pos-a {{ top: -180px; right: -200px; }}
+    .deco-orb.pos-b {{ bottom: -200px; left: -180px; }}
+
     .brand-mark {{
-        position: absolute; top: 56px; left: 60px; z-index: 20;
+        position: absolute; top: 48px; left: 60px; z-index: 20;
         font-size: 20px; font-weight: 700; letter-spacing: 0.08em;
-        color: rgba(255,255,255,0.55); text-transform: uppercase;
+        color: rgba(255,255,255,0.6); text-transform: uppercase;
     }}
     .page-indicator {{
         position: absolute; bottom: 56px; right: 60px; z-index: 20;
@@ -264,11 +338,31 @@ def build_html_template(slide, book_title, author, cover_url, bg_url, accent_col
     }}
     .page-indicator .current {{ color: var(--accent); font-size: 30px; }}
     .glass-card {{
-        background: rgba(255, 255, 255, 0.07); backdrop-filter: blur(20px);
-        border: 1px solid rgba(255, 255, 255, 0.16); border-radius: 36px;
-        box-shadow: 0 30px 60px rgba(0,0,0,0.5);
+        background: rgba(255, 255, 255, 0.08); backdrop-filter: blur(24px);
+        border: 1px solid rgba(255, 255, 255, 0.18); border-radius: 36px;
+        box-shadow: 0 30px 70px rgba(0,0,0,0.55);
+    }}
+    .tag-badge {{
+        display: inline-block; background: var(--accent); color: #0b1220;
+        font-weight: 800; padding: 10px 24px; border-radius: 999px;
+        font-size: 21px; letter-spacing: -0.01em; margin-bottom: 24px;
+    }}
+    .deco-icon {{
+        position: absolute; top: 64px; right: 70px; z-index: 2;
+        font-size: 120px; opacity: 0.22; line-height: 1;
+        filter: drop-shadow(0 8px 20px rgba(0,0,0,0.4));
     }}
     """
+
+    orb_pos = "pos-a" if slide_num % 2 == 0 else "pos-b"
+    deco_html = (
+        '<div class="bg-image"></div>'
+        '<div class="duotone-layer"></div>'
+        '<div class="shade-layer"></div>'
+        '<div class="top-bar"></div>'
+        f'<div class="deco-orb {orb_pos}"></div>'
+        f'{icon_html}'
+    )
 
     brand_html = f'<div class="brand-mark">{series_name}</div>'
     page_html = (
@@ -301,10 +395,11 @@ def build_html_template(slide, book_title, author, cover_url, bg_url, accent_col
             .sub-title {{ font-size: 27px; color: #cbd5e1; font-weight: 500; margin-top: 22px; word-break: keep-all; line-height: 1.4; }}
             .book-meta {{ font-size: 22px; color: var(--accent); font-weight: 700; margin-top: 32px; letter-spacing: 0.02em; }}
             </style></head><body>
-            <div class="bg-image"></div><div class="overlay"></div>
+            {deco_html}
             {brand_html}{page_html}
             <div class="container">
                 {cover_img_html}
+                {badge_html}
                 <div class="accent-line"></div>
                 <div class="head-title">{head}</div>
                 <div class="sub-title">{sub}</div>
@@ -318,23 +413,22 @@ def build_html_template(slide, book_title, author, cover_url, bg_url, accent_col
                 position: relative; z-index: 10; width: 100%; height: 100%;
                 display: flex; align-items: center; padding: 0 70px; color: #fff;
             }}
-            .left-col {{ flex: 1.1; text-align: left; padding-right: 40px; }}
-            .right-col {{ flex: 0.9; display: flex; justify-content: center; }}
+            .left-col {{ flex: 1.15; text-align: left; padding-right: 36px; }}
+            .right-col {{ flex: 0.85; display: flex; justify-content: center; }}
             .book-cover {{
-                width: 340px; height: 480px; object-fit: cover; border-radius: 14px;
-                box-shadow: 0 30px 70px rgba(0,0,0,0.85); border: 1px solid rgba(255,255,255,0.2);
-                transform: rotate(2.5deg);
+                width: 380px; height: 536px; object-fit: cover; border-radius: 14px;
+                box-shadow: 0 40px 90px rgba(0,0,0,0.85); border: 1px solid rgba(255,255,255,0.25);
+                transform: rotate(3deg);
             }}
-            .accent-bar-v {{ width: 6px; height: 90px; background: var(--accent); border-radius: 4px; margin-bottom: 24px; }}
-            .head-title {{ font-size: 50px; font-weight: 800; color: #fff; line-height: 1.3; letter-spacing: -0.02em; word-break: keep-all; }}
-            .sub-title {{ font-size: 25px; color: #cbd5e1; font-weight: 500; margin-top: 20px; line-height: 1.5; word-break: keep-all; }}
-            .book-meta {{ font-size: 20px; color: var(--accent); font-weight: 700; margin-top: 30px; }}
+            .head-title {{ font-size: 58px; font-weight: 800; color: #fff; line-height: 1.25; letter-spacing: -0.03em; word-break: keep-all; text-shadow: 0 6px 24px rgba(0,0,0,0.5); }}
+            .sub-title {{ font-size: 25px; color: #dbe4f0; font-weight: 500; margin-top: 22px; line-height: 1.5; word-break: keep-all; }}
+            .book-meta {{ font-size: 21px; color: var(--accent); font-weight: 700; margin-top: 32px; }}
             </style></head><body>
-            <div class="bg-image"></div><div class="overlay"></div>
+            {deco_html}
             {brand_html}{page_html}
             <div class="container">
                 <div class="left-col">
-                    <div class="accent-bar-v"></div>
+                    {badge_html}
                     <div class="head-title">{head}</div>
                     <div class="sub-title">{sub}</div>
                     <div class="book-meta">《{book_title}》 {author} 저</div>
@@ -361,7 +455,7 @@ def build_html_template(slide, book_title, author, cover_url, bg_url, accent_col
             .quote-text {{ font-size: 52px; font-weight: 800; color: #ffffff; line-height: 1.4; letter-spacing: -0.01em; word-break: keep-all; margin-bottom: 26px; }}
             .quote-sub {{ font-size: 27px; color: #cbd5e1; font-weight: 500; word-break: keep-all; line-height: 1.5; }}
             </style></head><body>
-            <div class="bg-image"></div><div class="overlay"></div>
+            {deco_html}
             {brand_html}{page_html}
             <div class="container">
                 <div class="glass-card">
@@ -384,7 +478,7 @@ def build_html_template(slide, book_title, author, cover_url, bg_url, accent_col
             .divider {{ width: 100%; height: 1px; background: rgba(255,255,255,0.2); margin: 36px 0; }}
             .quote-sub {{ font-size: 26px; color: #cbd5e1; font-weight: 500; word-break: keep-all; line-height: 1.6; }}
             </style></head><body>
-            <div class="bg-image"></div><div class="overlay"></div>
+            {deco_html}
             {brand_html}{page_html}
             <div class="container">
                 <div class="quote-mark">&ldquo;</div>
@@ -411,7 +505,7 @@ def build_html_template(slide, book_title, author, cover_url, bg_url, accent_col
         .cta-sub {{ font-size: 28px; font-weight: 600; color: #334155; line-height: 1.55; word-break: keep-all; margin-bottom: 36px; }}
         .cta-footer {{ font-size: 22px; font-weight: 700; color: var(--accent); background: rgba(56,189,248,0.12); padding: 18px 28px; border-radius: 50px; display: inline-block; }}
         </style></head><body>
-        <div class="bg-image"></div><div class="overlay"></div>
+        {deco_html}
         {brand_html}{page_html}
         <div class="container">
             <div class="cta-box">
@@ -440,7 +534,7 @@ def build_html_template(slide, book_title, author, cover_url, bg_url, accent_col
             .glass-card {{ padding: 52px 44px; }}
             .detail-body {{ font-size: 29px; font-weight: 500; color: #f1f5f9; line-height: 1.75; word-break: keep-all; text-align: left; }}
             </style></head><body>
-            <div class="bg-image"></div><div class="overlay"></div>
+            {deco_html}
             {brand_html}{page_html}
             <div class="container">
                 <div class="detail-head">{head}</div>
@@ -460,7 +554,7 @@ def build_html_template(slide, book_title, author, cover_url, bg_url, accent_col
             .detail-head {{ font-size: 42px; font-weight: 800; color: #ffffff; margin-bottom: 30px; line-height: 1.35; letter-spacing: -0.02em; word-break: keep-all; }}
             .detail-body {{ font-size: 28px; font-weight: 500; color: #f1f5f9; line-height: 1.75; word-break: keep-all; }}
             </style></head><body>
-            <div class="bg-image"></div><div class="overlay"></div>
+            {deco_html}
             {brand_html}{page_html}
             <div class="container">
                 <div class="num-col"><div class="big-num">{slide_num:02d}</div></div>
@@ -482,7 +576,7 @@ def build_html_template(slide, book_title, author, cover_url, bg_url, accent_col
             .detail-head {{ font-size: 46px; font-weight: 800; color: #ffffff; margin-bottom: 28px; line-height: 1.4; letter-spacing: -0.02em; word-break: keep-all; }}
             .detail-body {{ font-size: 27px; font-weight: 500; color: #cbd5e1; line-height: 1.8; word-break: keep-all; }}
             </style></head><body>
-            <div class="bg-image"></div><div class="overlay"></div>
+            {deco_html}
             {brand_html}{page_html}
             <div class="container">
                 <div class="accent-dot"></div>
@@ -501,18 +595,25 @@ async def render_html_to_images(book_title, author, scenario_data, cover_url):
     total = len(slides)
     accent_color = scenario_data.get("accent_color", "#38bdf8")
 
-    # 슬라이드 타입별로 배경을 다르게 (기존: 전체 공통 1장 → 개선: 타입별 개별 호출 + 캐싱)
-    bg_keywords = {
+    # 슬라이드 "타입"이 아니라 슬라이드 "개별 내용"에 맞춰 배경을 가져옴.
+    # Gemini가 각 슬라이드마다 만들어준 image_keyword(그 슬라이드의 실제 내용에 맞는
+    # 검색어)를 그대로 사용 — 같은 타입(quote, detail 등)이어도 슬라이드마다 완전히
+    # 다른 사진이 나오게 됨. image_keyword가 비어 있는 예외 상황에서만 타입별
+    # 기본값으로 폴백.
+    type_fallback_keywords = {
         "cover": f"{book_title},book,atmosphere",
         "quote": "paper,texture,minimal,light",
         "detail": "library,archive,vintage",
         "cta": "bookstore,shelf,warm light",
     }
     bg_cache = {}
-    def get_bg(s_type):
-        if s_type not in bg_cache:
-            bg_cache[s_type] = get_unsplash_bg_url(bg_keywords.get(s_type, "books,library"))
-        return bg_cache[s_type]
+    def get_bg_for_slide(slide):
+        keyword = (slide.get("image_keyword") or "").strip()
+        if not keyword:
+            keyword = type_fallback_keywords.get(slide.get("type", "detail"), "books,library")
+        if keyword not in bg_cache:
+            bg_cache[keyword] = get_unsplash_bg_url(keyword)
+        return bg_cache[keyword]
 
     img_paths = []
 
@@ -536,8 +637,7 @@ async def render_html_to_images(book_title, author, scenario_data, cover_url):
 
         for idx, slide in enumerate(slides, start=1):
             try:
-                s_type = slide.get("type", "detail")
-                bg_url = get_bg(s_type)
+                bg_url = get_bg_for_slide(slide)
                 html_content = build_html_template(
                     slide, book_title, author, cover_url, bg_url,
                     accent_color=accent_color,
