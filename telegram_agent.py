@@ -755,6 +755,28 @@ async def render_html_to_images(book_title, author, scenario_data, cover_url):
         )
         page = await context.new_page()
 
+        async def set_content_and_wait(html_content):
+            # ⚠️ set_content()의 기본 wait_until="load"는 배경 이미지(Unsplash/AI),
+            # Lucide 아이콘(jsdelivr CDN), Pretendard 웹폰트까지 "모든" 외부 리소스가
+            # 전부 다운로드될 때까지 블로킹한다. Render 무료 플랜은 CPU/대역폭이 매우
+            # 제한적이라 이 전체 로딩이 10초를 넘기기 쉬움(특히 아이콘 CDN 요청이
+            # 슬라이드마다 추가된 뒤로는 더욱 그렇다) → "Timeout 10000ms exceeded" 발생.
+            # domcontentloaded로 빠르게 넘어간 뒤, 이미지 로딩은 별도의 여유 있는
+            # 타임아웃으로 기다리되 실패해도 예외를 던지지 않고 있는 그대로 캡처한다.
+            await page.set_content(html_content, timeout=20000, wait_until="domcontentloaded")
+            try:
+                await page.wait_for_function(
+                    """() => Array.from(document.images).every(img => img.complete)""",
+                    timeout=12000,
+                )
+            except Exception:
+                pass  # 이미지가 느려도 캡처는 진행 (배경 없는 것보다 지연이 더 나쁨)
+            try:
+                await page.evaluate("document.fonts.ready")
+                await page.wait_for_function("document.fonts.status === 'loaded'", timeout=3000)
+            except Exception:
+                await page.wait_for_timeout(300)  # 폰트 로딩 확인 실패 시 최소 대기로 폴백
+
         for idx, slide in enumerate(slides, start=1):
             try:
                 bg_url = get_bg_for_slide(slide)
@@ -764,17 +786,10 @@ async def render_html_to_images(book_title, author, scenario_data, cover_url):
                     slide_num=idx,
                     total_slides=total,
                 )
-                # 최대 10초 대기 시간 제한 설정
-                await page.set_content(html_content, timeout=10000)
-                # Pretendard 웹폰트가 실제로 로드된 뒤 캡처 (감으로 200ms 기다리던 방식 대체)
-                try:
-                    await page.evaluate("document.fonts.ready")
-                    await page.wait_for_function("document.fonts.status === 'loaded'", timeout=3000)
-                except Exception:
-                    await page.wait_for_timeout(300)  # 폰트 로딩 확인 실패 시 최소 대기로 폴백
+                await set_content_and_wait(html_content)
 
                 output_path = f"card_{idx}.png"
-                await page.screenshot(path=output_path, timeout=10000)
+                await page.screenshot(path=output_path, timeout=15000)
 
                 # 비전 QA: 실제로 렌더링된 결과물을 멀티모달로 육안 검수.
                 # 명백한 결함(텍스트 잘림/겹침)이 발견되면 전체 요소를 살짝 축소해서
@@ -789,13 +804,8 @@ async def render_html_to_images(book_title, author, scenario_data, cover_url):
                         total_slides=total,
                         shrink=True,
                     )
-                    await page.set_content(retry_html, timeout=10000)
-                    try:
-                        await page.evaluate("document.fonts.ready")
-                        await page.wait_for_function("document.fonts.status === 'loaded'", timeout=3000)
-                    except Exception:
-                        await page.wait_for_timeout(300)
-                    await page.screenshot(path=output_path, timeout=10000)
+                    await set_content_and_wait(retry_html)
+                    await page.screenshot(path=output_path, timeout=15000)
 
                 img_paths.append(output_path)
             except Exception as e:
