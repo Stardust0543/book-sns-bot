@@ -4,4 +4,4 @@ gspread
 google-genai
 python-telegram-bot
 Pillow
-playwright
+playwright==1.63.0
